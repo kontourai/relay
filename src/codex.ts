@@ -27,6 +27,7 @@ export function createCodexRuntime(options: CodexRuntimeOptions): ModelRuntime {
         throw new ModelInvocationError("ABORTED", "Invocation aborted", false);
       }
       const forcedTool = resolveForcedTool(request);
+      if (forcedTool) validateCodexOutputSchema(forcedTool.inputSchema);
       const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "relay-codex-"));
       try {
         const schemaPath = forcedTool ? path.join(temporaryRoot, "output.schema.json") : undefined;
@@ -46,6 +47,69 @@ export function createCodexRuntime(options: CodexRuntimeOptions): ModelRuntime {
       }
     },
   };
+}
+
+function validateCodexOutputSchema(schema: Readonly<Record<string, unknown>>): void {
+  const visit = (value: unknown, schemaPath: string): void => {
+    if (!isRecord(value)) {
+      incompatibleSchema(schemaPath, "schema must be an object");
+    }
+    if (Object.keys(value).length === 0) {
+      incompatibleSchema(schemaPath, "unconstrained schemas are not supported");
+    }
+
+    const declaresObject = value.type === "object" || "properties" in value;
+    if (declaresObject) {
+      if (value.additionalProperties !== false) {
+        incompatibleSchema(schemaPath, "object schemas require additionalProperties: false");
+      }
+      if (!isRecord(value.properties)) {
+        incompatibleSchema(schemaPath, "object schemas require a properties object");
+      }
+      const required = Array.isArray(value.required) ? value.required : [];
+      for (const [propertyName, propertySchema] of Object.entries(value.properties)) {
+        if (!required.includes(propertyName)) {
+          incompatibleSchema(`${schemaPath}/properties/${escapePointer(propertyName)}`, "properties must be required; express optional values with a nullable schema");
+        }
+        visit(propertySchema, `${schemaPath}/properties/${escapePointer(propertyName)}`);
+      }
+    }
+
+    const declaresArray = value.type === "array" || "items" in value;
+    if (declaresArray) {
+      if (!("items" in value)) incompatibleSchema(schemaPath, "array schemas require items");
+      visit(value.items, `${schemaPath}/items`);
+    }
+
+    for (const keyword of ["anyOf", "oneOf", "allOf"] as const) {
+      const branches = value[keyword];
+      if (branches === undefined) continue;
+      if (!Array.isArray(branches) || branches.length === 0) incompatibleSchema(`${schemaPath}/${keyword}`, `${keyword} requires at least one schema`);
+      branches.forEach((branch, index) => visit(branch, `${schemaPath}/${keyword}/${index}`));
+    }
+    for (const keyword of ["$defs", "definitions"] as const) {
+      const definitions = value[keyword];
+      if (definitions === undefined) continue;
+      if (!isRecord(definitions)) incompatibleSchema(`${schemaPath}/${keyword}`, `${keyword} must be an object`);
+      for (const [name, definition] of Object.entries(definitions)) {
+        visit(definition, `${schemaPath}/${keyword}/${escapePointer(name)}`);
+      }
+    }
+  };
+
+  visit(schema, "#");
+}
+
+function incompatibleSchema(schemaPath: string, reason: string): never {
+  throw new ModelInvocationError("INVALID_REQUEST", `Codex structured-output schema is incompatible at ${schemaPath}: ${reason}`, false);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function escapePointer(value: string): string {
+  return value.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
 /** Public for profile conformance fixtures; applications should construct the runtime. */
