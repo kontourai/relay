@@ -35,6 +35,10 @@
       "types": "./dist/src/opencode.d.ts",
       "import": "./dist/src/opencode.js"
     },
+    "./runtime-profile": {
+      "types": "./dist/src/runtime-profile.d.ts",
+      "import": "./dist/src/runtime-profile.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

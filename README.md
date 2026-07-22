@@ -124,6 +124,26 @@ request, and attaches a warning to successful results. It is intentionally not
 presented as equivalent to the native schema enforcement in Claude Code or
 Codex, and malformed JSON remains a retryable typed failure.
 
+## Declarative runtime profiles
+
+Applications can share one `PROFILE:MODEL` definition without copying adapter
+switch statements:
+
+```ts
+import { createModelRuntimeProfile, parseModelRuntimeProfile } from "@kontourai/relay/runtime-profile";
+
+const runtime = createModelRuntimeProfile({
+  ...parseModelRuntimeProfile("codex:gpt-5"),
+  cwd: process.cwd(),
+});
+```
+
+This entrypoint constructs exactly one runtime. It does not select providers,
+define fallback, or own budgets; compose multiple runtimes through Dispatch
+when the application needs those policies. OpenCode structured tools require
+the explicit `allowPromptedStructuredOutput` option. Hosted credentials remain
+explicit constructor inputs and are never read by the profile resolver.
+
 ## Anthropic-compatible runtime
 
 The optional `/anthropic` entrypoint loads `@anthropic-ai/sdk` only when a
