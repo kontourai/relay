@@ -1,8 +1,14 @@
 export type JsonSchema = Readonly<Record<string, unknown>>;
 
+export type ModelMessageContentPart =
+  | { type: "text"; text: string }
+  | { type: "tool-call"; id: string; name: string; input: unknown }
+  | { type: "tool-result"; id: string; name: string; output: unknown; isError?: boolean };
+
 export interface ModelMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
+  role: "system" | "user" | "assistant" | "tool";
+  /** A string retains the v0.1 text-only contract byte-for-byte. */
+  content: string | readonly ModelMessageContentPart[];
 }
 
 export interface ModelTool {

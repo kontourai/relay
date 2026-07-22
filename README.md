@@ -48,6 +48,32 @@ const runtime = createAnthropicRuntime({
 });
 ```
 
+## AI SDK v3 framework adapter
+
+The optional `/ai-sdk` entrypoint bridges Relay with frameworks that consume
+the Vercel AI SDK v3 model contract. Both directions are supported:
+
+```ts
+import { createAiSdkModel, createAiSdkRuntime } from "@kontourai/relay/ai-sdk";
+
+// Use an AI SDK provider model as a Relay candidate.
+const candidateRuntime = createAiSdkRuntime({ model: providerModel });
+
+// Give a Relay runtime— including a policy-backed runtime — to an AI SDK host.
+const frameworkModel = createAiSdkModel({ runtime });
+```
+
+Text, function tools, tool selection, assistant tool calls, tool results,
+usage, finish reasons, and abort signals cross the adapter. Provider-defined
+tools, files, reasoning parts, approval parts, sampling controls, response
+formats, seeds, and provider-specific options are not portable in the current
+Relay contract and produce an explicit warning or typed invalid-request error.
+
+Relay v0.2 has no native streaming contract. `createAiSdkModel()` therefore
+buffers one Relay invocation and emits a valid compatibility stream afterward;
+the stream includes a compatibility warning and must not be described as live
+token streaming.
+
 Credentials are adapter-construction data and must never be placed in Relay
 requests, results, replay records, or conformance reports. Recording captures
 request content by design, so hosts must apply their own content-handling policy.
