@@ -17,11 +17,12 @@
     "build": "rm -rf dist && tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test dist/tests/*.test.js",
-    "verify": "npm run typecheck && npm test && npm pack --dry-run"
+    "verify": "npm run typecheck && npm test && npm pack --dry-run",
+    "veritas:readiness": "veritas readiness --working-tree"
   },
   "peerDependencies": { "@anthropic-ai/sdk": ">=0.40.0" },
   "peerDependenciesMeta": { "@anthropic-ai/sdk": { "optional": true } },
-  "devDependencies": { "@types/node": "^24.0.0", "typescript": "^5.8.3" },
+  "devDependencies": { "@kontourai/veritas": "^1.3.0", "@types/node": "^24.0.0", "typescript": "^5.8.3" },
   "publishConfig": { "access": "public" },
   "repository": { "type": "git", "url": "git+https://github.com/kontourai/relay.git" }
 }

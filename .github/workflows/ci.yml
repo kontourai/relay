@@ -39,3 +39,7 @@ jobs:
       - name: Verify
         run: npm run verify
         working-directory: relay
+
+      - name: Veritas readiness
+        run: npm run veritas:readiness -- --run-id "ci-${{ github.run_id }}-${{ matrix.node-version }}" --force
+        working-directory: relay
