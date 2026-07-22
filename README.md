@@ -83,6 +83,22 @@ const localRuntime = createClaudeCodeRuntime({ model: "sonnet" });
 Authentication remains owned by the installed harness. Relay does not inspect,
 copy, or persist its credential configuration.
 
+### Codex profile
+
+`@kontourai/relay/codex` uses `codex exec` JSONL events and its native output
+schema file. Relay creates the schema and a neutral default working directory
+for one invocation, then removes both. A host may provide an explicit working
+directory when repository context is intentionally part of the runtime target.
+
+```ts
+import { createCodexRuntime } from "@kontourai/relay/codex";
+
+const localRuntime = createCodexRuntime({ model: "gpt-5" });
+```
+
+Like the Claude Code profile, Codex currently guarantees text or one explicitly
+selected structured tool. Unsupported tool-selection semantics fail explicitly.
+
 ## Anthropic-compatible runtime
 
 The optional `/anthropic` entrypoint loads `@anthropic-ai/sdk` only when a
