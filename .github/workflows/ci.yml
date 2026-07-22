@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  secret-scan:
+    name: Secret Scan
+    uses: kontourai/.github/.github/workflows/secret-scan.yml@main
+    permissions:
+      contents: read
+
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['22', '24']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          path: relay
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: relay
+
+      - name: Verify
+        run: npm run verify
+        working-directory: relay

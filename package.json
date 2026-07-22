@@ -1,0 +1,27 @@
+{
+  "name": "@kontourai/relay",
+  "version": "0.1.0",
+  "description": "Portable, provider-neutral model invocation contracts, adapters, and conformance tools",
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/src/index.d.ts", "import": "./dist/src/index.js" },
+    "./anthropic": { "types": "./dist/src/anthropic.d.ts", "import": "./dist/src/anthropic.js" },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist/", "README.md", "CONTEXT.md", "LICENSE"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "verify": "npm run typecheck && npm test && npm pack --dry-run"
+  },
+  "peerDependencies": { "@anthropic-ai/sdk": ">=0.40.0" },
+  "peerDependenciesMeta": { "@anthropic-ai/sdk": { "optional": true } },
+  "devDependencies": { "@types/node": "^24.0.0", "typescript": "^5.8.3" },
+  "publishConfig": { "access": "public" },
+  "repository": { "type": "git", "url": "git+https://github.com/kontourai/relay.git" }
+}
