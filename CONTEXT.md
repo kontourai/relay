@@ -14,6 +14,11 @@ usage, latency, stop reason, and failure identity.
 **Runtime Target**: Constructor-only provider configuration supplied by a host,
 often after Datum resolution. Credentials are never invocation data.
 
+**Harness Profile**: A thin mapping between a supported non-interactive process
+protocol and Relay's invocation contract. It declares only capabilities the
+harness can actually provide; the shared process transport owns execution,
+abort, output bounds, and sanitized failure behavior.
+
 **Domain Adapter**: A product-owned translation between its semantic operation
 and Relay invocation. Traverse extraction is one example.
 

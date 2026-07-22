@@ -34,6 +34,38 @@ const result = await runtime.invoke({
 await checkRuntimeConformance(runtime);
 ```
 
+## Process-backed harnesses
+
+`@kontourai/relay/process` provides an abortable, output-bounded transport for
+non-interactive model harnesses. A thin harness profile owns request encoding,
+response parsing, typed failure classification, and an honest capability
+declaration. The transport never interprets prompts, chooses a model, discovers
+credentials, or copies constructor environment into results and errors.
+
+```ts
+import { createProcessRuntime } from "@kontourai/relay/process";
+
+const runtime = createProcessRuntime({
+  id: "my-harness",
+  executable: "my-harness",
+  capabilities: {
+    structuredTools: false,
+    streaming: false,
+    abort: true,
+    usage: false,
+  },
+  codec: {
+    prepare: (request) => ({ args: ["run", "--json"], stdin: JSON.stringify(request) }),
+    parse: (output) => normalizeHarnessOutput(output.stdout),
+  },
+});
+```
+
+Products should depend on `ModelRuntime`, not the process profile. This keeps a
+single workload definition portable between a locally authenticated harness
+and an SDK/API runtime selected later by the host or Dispatch. A profile must
+report unsupported capabilities rather than silently approximating them.
+
 ## Anthropic-compatible runtime
 
 The optional `/anthropic` entrypoint loads `@anthropic-ai/sdk` only when a
