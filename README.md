@@ -66,6 +66,23 @@ single workload definition portable between a locally authenticated harness
 and an SDK/API runtime selected later by the host or Dispatch. A profile must
 report unsupported capabilities rather than silently approximating them.
 
+### Claude Code profile
+
+`@kontourai/relay/claude-code` uses Claude Code's non-interactive JSON output
+and native JSON Schema validation. It supports text-only requests and exactly
+one explicitly selected structured tool. Automatic tool choice and required
+choice among multiple tools are rejected because the CLI cannot guarantee
+those Relay semantics through its structured-output surface.
+
+```ts
+import { createClaudeCodeRuntime } from "@kontourai/relay/claude-code";
+
+const localRuntime = createClaudeCodeRuntime({ model: "sonnet" });
+```
+
+Authentication remains owned by the installed harness. Relay does not inspect,
+copy, or persist its credential configuration.
+
 ## Anthropic-compatible runtime
 
 The optional `/anthropic` entrypoint loads `@anthropic-ai/sdk` only when a
