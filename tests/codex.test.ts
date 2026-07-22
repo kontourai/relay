@@ -8,7 +8,7 @@ import { ModelInvocationError, type ModelInvocationRequest } from "../src/types.
 
 const request: ModelInvocationRequest = {
   messages: [{ role: "user", content: "Camp Alpha has 40 openings." }],
-  tools: [{ name: "submit", inputSchema: { type: "object", properties: { openings: { type: "number" } }, required: ["openings"] } }],
+  tools: [{ name: "submit", inputSchema: { type: "object", additionalProperties: false, properties: { openings: { type: "number" } }, required: ["openings"] } }],
   toolChoice: { type: "tool", name: "submit" },
 };
 
@@ -78,6 +78,68 @@ process.stdout.write(JSON.stringify({type:"turn.completed",usage:{input_tokens:2
     const schemaPath = await readFile(recordPath, "utf8");
     await assert.rejects(access(schemaPath), (error: unknown) =>
       typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT");
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Codex runtime reports nested schema incompatibilities before launch without mutating the caller schema", async () => {
+  const schemas = [
+    {
+      schema: { type: "object", properties: {}, required: [] },
+      expected: /at #: object schemas require additionalProperties: false/,
+    },
+    {
+      schema: {
+        type: "object", additionalProperties: false, required: ["rows"], properties: {
+          rows: { type: "array", items: { type: "object", additionalProperties: false, required: ["value"], properties: { value: {} } } },
+        },
+      },
+      expected: /#\/properties\/rows\/items\/properties\/value: unconstrained schemas are not supported/,
+    },
+    {
+      schema: {
+        type: "object", additionalProperties: false, required: [], properties: { note: { type: ["string", "null"] } },
+      },
+      expected: /#\/properties\/note: properties must be required/,
+    },
+  ] as const;
+
+  for (const fixture of schemas) {
+    const original = JSON.stringify(fixture.schema);
+    const runtime = createCodexRuntime({ model: "fixture", executable: "/must-not-run" });
+    await assert.rejects(runtime.invoke({
+      messages: request.messages,
+      tools: [{ name: "submit", inputSchema: fixture.schema }],
+      toolChoice: { type: "tool", name: "submit" },
+    }), (error: unknown) => error instanceof ModelInvocationError
+      && error.code === "INVALID_REQUEST"
+      && fixture.expected.test(error.message));
+    assert.equal(JSON.stringify(fixture.schema), original);
+  }
+});
+
+test("Codex runtime accepts strict nested arrays and nullable required fields", async () => {
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "relay-codex-strict-fixture-"));
+  const executable = path.join(fixtureRoot, "codex-fixture.mjs");
+  await writeFile(executable, `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:JSON.stringify({rows:[{note:null}]})}}) + "\\n");
+`, { encoding: "utf8", mode: 0o700 });
+  await chmod(executable, 0o700);
+  try {
+    const runtime = createCodexRuntime({ model: "fixture", executable });
+    const result = await runtime.invoke({
+      messages: request.messages,
+      tools: [{ name: "submit", inputSchema: {
+        type: "object", additionalProperties: false, required: ["rows"], properties: {
+          rows: { type: "array", items: {
+            type: "object", additionalProperties: false, required: ["note"], properties: { note: { type: ["string", "null"] } },
+          } },
+        },
+      } }],
+      toolChoice: { type: "tool", name: "submit" },
+    });
+    assert.deepEqual(result.toolCalls[0]?.input, { rows: [{ note: null }] });
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
   }
