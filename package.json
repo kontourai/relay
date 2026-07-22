@@ -23,6 +23,10 @@
       "types": "./dist/src/process.d.ts",
       "import": "./dist/src/process.js"
     },
+    "./claude-code": {
+      "types": "./dist/src/claude-code.d.ts",
+      "import": "./dist/src/claude-code.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
