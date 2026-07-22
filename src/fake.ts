@@ -1,7 +1,7 @@
 import type { ModelInvocationOptions, ModelInvocationRequest, ModelInvocationResult, ModelRuntime, ModelRuntimeCapabilities } from "./types.js";
 import { ModelInvocationError } from "./types.js";
 
-const capabilities: ModelRuntimeCapabilities = Object.freeze({ structuredTools: true, streaming: false, abort: true, usage: true });
+const capabilities: ModelRuntimeCapabilities = Object.freeze({ structuredTools: true, structuredToolsFidelity: "native", streaming: false, abort: true, usage: true });
 
 export class FakeModelRuntime implements ModelRuntime {
   readonly id: string;

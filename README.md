@@ -66,6 +66,12 @@ single workload definition portable between a locally authenticated harness
 and an SDK/API runtime selected later by the host or Dispatch. A profile must
 report unsupported capabilities rather than silently approximating them.
 
+Structured-output fidelity is part of that capability declaration. Relay's
+built-in SDK and schema-enforced harness adapters report `"native"`; OpenCode's
+explicit prompt-enforced mode reports `"prompted"`; an adapter without a
+structured-output path reports `"unavailable"`. Hosts can therefore apply one
+routing policy without branching the workload definition by runtime.
+
 ### Claude Code profile
 
 `@kontourai/relay/claude-code` uses Claude Code's non-interactive JSON output
@@ -161,6 +167,14 @@ token streaming.
 Credentials are adapter-construction data and must never be placed in Relay
 requests, results, replay records, or conformance reports. Recording captures
 request content by design, so hosts must apply their own content-handling policy.
+
+## Portable-definition parity
+
+Relay's conformance suite sends the same messages, tool schema, and selected
+tool through the Claude Code, Codex, OpenCode, and hosted SDK profiles. It
+compares the normalized tool name and input while allowing transport identity,
+usage, latency, and warnings to differ. This is the portability guarantee:
+domain meaning is stable, while the application chooses the runtime binding.
 
 ## Boundaries
 

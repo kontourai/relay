@@ -26,7 +26,7 @@ export class ReplayModelRuntime implements ModelRuntime {
   constructor(records: readonly InvocationReplayRecord[]) {
     this.#records = new Map(records.map((record) => [record.requestDigest, structuredClone(record.result)]));
   }
-  capabilities(): ModelRuntimeCapabilities { return { structuredTools: true, streaming: false, abort: true, usage: true }; }
+  capabilities(): ModelRuntimeCapabilities { return { structuredTools: true, structuredToolsFidelity: "native", streaming: false, abort: true, usage: true }; }
   async invoke(request: ModelInvocationRequest, options?: ModelInvocationOptions): Promise<ModelInvocationResult> {
     if (options?.signal?.aborted) throw new ModelInvocationError("ABORTED", "Invocation aborted", false);
     const result = this.#records.get(invocationDigest(request));
