@@ -25,4 +25,22 @@ describe("Relay core", () => {
     const report = await checkRuntimeConformance(new FakeModelRuntime([result]));
     assert.equal(report.passed, true);
   });
+
+  it("rejects contradictory structured-tool fidelity declarations", async () => {
+    const runtime = new FakeModelRuntime([result]);
+    const contradictory = {
+      id: runtime.id,
+      capabilities: () => ({
+        structuredTools: false,
+        structuredToolsFidelity: "native" as const,
+        streaming: false,
+        abort: true,
+        usage: true,
+      }),
+      invoke: runtime.invoke.bind(runtime),
+    };
+    const report = await checkRuntimeConformance(contradictory);
+    assert.equal(report.passed, false);
+    assert.equal(report.checks.find(({ name }) => name === "structured-tools-fidelity")?.passed, false);
+  });
 });

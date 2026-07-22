@@ -11,6 +11,15 @@ export async function checkRuntimeConformance(runtime: ModelRuntime): Promise<Ru
   const checks: { name: string; passed: boolean; detail: string }[] = [];
   const capabilities = runtime.capabilities();
   checks.push({ name: "capabilities", passed: typeof capabilities.abort === "boolean", detail: JSON.stringify(capabilities) });
+  const fidelity = capabilities.structuredToolsFidelity;
+  const fidelityConsistent = fidelity === undefined
+    || (capabilities.structuredTools && (fidelity === "native" || fidelity === "prompted"))
+    || (!capabilities.structuredTools && fidelity === "unavailable");
+  checks.push({
+    name: "structured-tools-fidelity",
+    passed: fidelityConsistent,
+    detail: fidelity === undefined ? "not declared" : fidelity,
+  });
   try {
     const result = await runtime.invoke(request);
     checks.push({ name: "identity", passed: Boolean(result.provider && result.model), detail: `${result.provider}/${result.model}` });
