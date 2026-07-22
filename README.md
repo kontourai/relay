@@ -99,6 +99,25 @@ const localRuntime = createCodexRuntime({ model: "gpt-5" });
 Like the Claude Code profile, Codex currently guarantees text or one explicitly
 selected structured tool. Unsupported tool-selection semantics fail explicitly.
 
+### OpenCode profile
+
+`@kontourai/relay/opencode` consumes `opencode run --format json` events and
+accepts any configured `provider/model` identifier, including a GLM model.
+OpenCode does not currently expose a run-level output-schema flag, so structured
+tools are rejected by default.
+
+```ts
+import { createOpenCodeRuntime } from "@kontourai/relay/opencode";
+
+const localRuntime = createOpenCodeRuntime({ model: "zai/glm-5" });
+```
+
+A host may explicitly select `structuredOutput: "prompted"`. That mode reports
+`structuredToolsFidelity: "prompted"`, injects the selected schema into the
+request, and attaches a warning to successful results. It is intentionally not
+presented as equivalent to the native schema enforcement in Claude Code or
+Codex, and malformed JSON remains a retryable typed failure.
+
 ## Anthropic-compatible runtime
 
 The optional `/anthropic` entrypoint loads `@anthropic-ai/sdk` only when a

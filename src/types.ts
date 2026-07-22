@@ -56,6 +56,8 @@ export interface ModelInvocationResult {
 
 export interface ModelRuntimeCapabilities {
   structuredTools: boolean;
+  /** Optional evidence about how structured tool output is produced. */
+  structuredToolsFidelity?: "native" | "prompted" | "unavailable";
   streaming: boolean;
   abort: boolean;
   usage: boolean;

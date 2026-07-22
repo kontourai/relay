@@ -21,7 +21,7 @@ export function createClaudeCodeRuntime(options: ClaudeCodeRuntimeOptions): Mode
   return createProcessRuntime({
     id: `claude-code:${options.model}`,
     executable: options.executable ?? "claude",
-    capabilities: { structuredTools: true, streaming: false, abort: true, usage: true },
+    capabilities: { structuredTools: true, structuredToolsFidelity: "native", streaming: false, abort: true, usage: true },
     codec: createClaudeCodeCodec(options.model),
     ...(options.cwd ? { cwd: options.cwd } : {}),
     ...(options.environment ? { environment: options.environment } : {}),

@@ -31,6 +31,10 @@
       "types": "./dist/src/codex.d.ts",
       "import": "./dist/src/codex.js"
     },
+    "./opencode": {
+      "types": "./dist/src/opencode.d.ts",
+      "import": "./dist/src/opencode.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
