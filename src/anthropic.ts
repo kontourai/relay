@@ -40,6 +40,25 @@ async function clientFor(options: AnthropicRuntimeOptions): Promise<AnthropicMes
   return new loaded.default(clientOptions).messages;
 }
 
+function anthropicMessages(request: ModelInvocationRequest): Array<Record<string, unknown>> {
+  return request.messages.filter(({ role }) => role !== "system").map((message) => {
+    if (typeof message.content === "string") return { role: message.role === "tool" ? "user" : message.role, content: message.content };
+    const content = message.content.map((part) => {
+      if (part.type === "text") return { type: "text", text: part.text };
+      if (part.type === "tool-call") return { type: "tool_use", id: part.id, name: part.name, input: part.input };
+      return { type: "tool_result", tool_use_id: part.id, content: typeof part.output === "string" ? part.output : JSON.stringify(part.output), ...(part.isError ? { is_error: true } : {}) };
+    });
+    return { role: message.role === "tool" ? "user" : message.role, content };
+  });
+}
+
+function systemText(request: ModelInvocationRequest): string | undefined {
+  const content = request.messages.filter(({ role }) => role === "system").flatMap((message) => typeof message.content === "string"
+    ? [message.content]
+    : message.content.filter((part) => part.type === "text").map((part) => part.text));
+  return content.length ? content.join("\n\n") : undefined;
+}
+
 export function createAnthropicRuntime(options: AnthropicRuntimeOptions): ModelRuntime {
   const provider = options.provider ?? "anthropic-compatible";
   const now = options.now ?? (() => performance.now());
@@ -55,11 +74,12 @@ export function createAnthropicRuntime(options: AnthropicRuntimeOptions): ModelR
         const toolChoice = request.toolChoice?.type === "tool"
           ? { type: "tool", name: request.toolChoice.name }
           : request.toolChoice?.type === "required" ? { type: "any" } : request.toolChoice ? { type: "auto" } : undefined;
+        const system = systemText(request);
         const response = await client.create({
           model: options.model,
           max_tokens: request.maxOutputTokens ?? options.defaultMaxOutputTokens ?? 2048,
-          messages: request.messages.filter(({ role }) => role !== "system").map(({ role, content }) => ({ role, content })),
-          ...(request.messages.some(({ role }) => role === "system") ? { system: request.messages.filter(({ role }) => role === "system").map(({ content }) => content).join("\n\n") } : {}),
+          messages: anthropicMessages(request),
+          ...(system === undefined ? {} : { system }),
           ...(tools?.length ? { tools } : {}),
           ...(toolChoice ? { tool_choice: toolChoice } : {}),
         }, invocationOptions?.signal ? { signal: invocationOptions.signal } : undefined);

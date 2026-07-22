@@ -31,4 +31,20 @@ describe("Anthropic-compatible runtime", () => {
     await assert.rejects(() => createAnthropicRuntime({ client: unknownFailure, model: "m" }).invoke({ messages: [{ role: "user", content: "x" }] }),
       (error: unknown) => error instanceof ModelInvocationError && error.code === "RUNTIME_FAILURE" && error.message === "Model invocation failed");
   });
+
+  it("projects portable tool calls and results into Anthropic message blocks", async () => {
+    let captured: Record<string, unknown> | undefined;
+    const client: AnthropicMessagesClient = { async create(params) {
+      captured = params;
+      return { model: "m", stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: "text", text: "ok" }] };
+    } };
+    await createAnthropicRuntime({ client, model: "m" }).invoke({ messages: [
+      { role: "assistant", content: [{ type: "tool-call", id: "call:1", name: "lookup", input: { q: "x" } }] },
+      { role: "tool", content: [{ type: "tool-result", id: "call:1", name: "lookup", output: { value: 1 } }] },
+    ] });
+    assert.deepEqual(captured?.["messages"], [
+      { role: "assistant", content: [{ type: "tool_use", id: "call:1", name: "lookup", input: { q: "x" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call:1", content: "{\"value\":1}" }] },
+    ]);
+  });
 });
