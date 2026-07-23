@@ -8,8 +8,12 @@ describe("declarative runtime profiles", () => {
     assert.throws(() => parseModelRuntimeProfile("unknown:model"), /unknown runtime profile/);
   });
   it("constructs native structured-output local profiles without invoking them", () => {
-    assert.equal(createModelRuntimeProfile({ profile: "claude-code", model: "sonnet" }).capabilities().structuredToolsFidelity, "native");
-    assert.equal(createModelRuntimeProfile({ profile: "codex", model: "gpt-5" }).capabilities().structuredToolsFidelity, "native");
+    const claudeCodeCapabilities = createModelRuntimeProfile({ profile: "claude-code", model: "sonnet" }).capabilities();
+    const codexCapabilities = createModelRuntimeProfile({ profile: "codex", model: "gpt-5" }).capabilities();
+    assert.equal(claudeCodeCapabilities.structuredToolsFidelity, "native");
+    assert.equal(claudeCodeCapabilities.outputTokenLimitFidelity, "unavailable");
+    assert.equal(codexCapabilities.structuredToolsFidelity, "native");
+    assert.equal(codexCapabilities.outputTokenLimitFidelity, "unavailable");
   });
   it("requires explicit consent for prompted structured output", () => {
     assert.throws(() => createModelRuntimeProfile({ profile: "opencode", model: "zai/glm-5" }), /explicit prompted-output opt-in/);

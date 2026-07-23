@@ -33,6 +33,7 @@ export function createOpenCodeRuntime(options: OpenCodeRuntimeOptions): ModelRun
     capabilities: () => ({
       structuredTools: supportsPromptedTools,
       structuredToolsFidelity: supportsPromptedTools ? "prompted" : "unavailable",
+      outputTokenLimitFidelity: "unavailable",
       streaming: false,
       abort: true,
       usage: true,
@@ -48,6 +49,7 @@ export function createOpenCodeRuntime(options: OpenCodeRuntimeOptions): ModelRun
           capabilities: {
             structuredTools: supportsPromptedTools,
             structuredToolsFidelity: supportsPromptedTools ? "prompted" : "unavailable",
+            outputTokenLimitFidelity: "unavailable",
             streaming: false,
             abort: true,
             usage: true,

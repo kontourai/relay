@@ -166,7 +166,7 @@ export function createAiSdkRuntime(options: AiSdkRuntimeOptions): ModelRuntime {
   const now = options.now ?? (() => performance.now());
   return {
     id: options.id ?? `${options.model.provider}:${options.model.modelId}`,
-    capabilities: () => ({ structuredTools: true, structuredToolsFidelity: "native", streaming: false, abort: true, usage: true }),
+    capabilities: () => ({ structuredTools: true, structuredToolsFidelity: "native", outputTokenLimitFidelity: "native", streaming: false, abort: true, usage: true }),
     async invoke(request, invocationOptions) {
       const started = now();
       try {

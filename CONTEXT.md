@@ -11,6 +11,10 @@ a direct SDK, local engine, hosted service, or agent framework.
 **Invocation**: One request/result exchange with normalized provider, model,
 usage, latency, stop reason, and failure identity.
 
+**Output Token Limit Fidelity**: A runtime capability declaring whether
+`maxOutputTokens` is natively enforced, approximated, or unavailable. A request
+does not imply enforcement when a profile declares otherwise.
+
 **Runtime Target**: Constructor-only provider configuration supplied by a host,
 often after Datum resolution. Credentials are never invocation data.
 

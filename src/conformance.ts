@@ -20,6 +20,15 @@ export async function checkRuntimeConformance(runtime: ModelRuntime): Promise<Ru
     passed: fidelityConsistent,
     detail: fidelity === undefined ? "not declared" : fidelity,
   });
+  const outputLimitFidelity = capabilities.outputTokenLimitFidelity;
+  checks.push({
+    name: "output-token-limit-fidelity",
+    passed: outputLimitFidelity === undefined
+      || outputLimitFidelity === "native"
+      || outputLimitFidelity === "approximated"
+      || outputLimitFidelity === "unavailable",
+    detail: outputLimitFidelity === undefined ? "not declared" : outputLimitFidelity,
+  });
   try {
     const result = await runtime.invoke(request);
     checks.push({ name: "identity", passed: Boolean(result.provider && result.model), detail: `${result.provider}/${result.model}` });

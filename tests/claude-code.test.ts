@@ -14,6 +14,7 @@ const request: ModelInvocationRequest = {
     inputSchema: { type: "object", properties: { openings: { type: "number" } }, required: ["openings"] },
   }],
   toolChoice: { type: "tool", name: "submit" },
+  maxOutputTokens: 3,
 };
 
 test("Claude Code profile projects one forced tool through native JSON schema", () => {
@@ -29,7 +30,13 @@ test("Claude Code profile projects one forced tool through native JSON schema", 
     stdout: JSON.stringify({
       result: "",
       structured_output: { openings: 40 },
-      usage: { input_tokens: 8, output_tokens: 4 },
+      usage: {
+        input_tokens: 8,
+        output_tokens: 4,
+        cache_read_input_tokens: 120,
+        cache_creation_input_tokens: 16,
+      },
+      total_cost_usd: 0.0042,
       stop_reason: "end_turn",
     }),
     stderr: "",
@@ -37,7 +44,23 @@ test("Claude Code profile projects one forced tool through native JSON schema", 
     latencyMs: 12,
   }, request);
   assert.deepEqual(result.toolCalls, [{ id: "claude-code-structured-output", name: "submit", input: { openings: 40 } }]);
-  assert.deepEqual(result.usage, { inputTokens: 8, outputTokens: 4, totalTokens: 12 });
+  assert.deepEqual(result.usage, {
+    inputTokens: 8,
+    outputTokens: 4,
+    totalTokens: 12,
+    cacheReadTokens: 120,
+    cacheWriteTokens: 16,
+    costUsd: 0.0042,
+  });
+  assert.deepEqual(result.warnings, ["OUTPUT_TOKEN_LIMIT_NOT_ENFORCED: requested 3, observed 4"]);
+});
+
+test("Claude Code declares that output-token requests are not enforced", async () => {
+  const { createClaudeCodeRuntime } = await import("../src/claude-code.js");
+  assert.equal(
+    createClaudeCodeRuntime({ model: "sonnet" }).capabilities().outputTokenLimitFidelity,
+    "unavailable",
+  );
 });
 
 test("Claude Code profile rejects tool semantics its CLI cannot guarantee", () => {

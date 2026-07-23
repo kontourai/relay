@@ -12,7 +12,13 @@ export interface ClaudeCodeRuntimeOptions {
 interface ClaudeCodeJsonResult {
   result?: unknown;
   structured_output?: unknown;
-  usage?: { input_tokens?: unknown; output_tokens?: unknown };
+  usage?: {
+    input_tokens?: unknown;
+    output_tokens?: unknown;
+    cache_read_input_tokens?: unknown;
+    cache_creation_input_tokens?: unknown;
+  };
+  total_cost_usd?: unknown;
   stop_reason?: unknown;
   is_error?: unknown;
 }
@@ -21,7 +27,14 @@ export function createClaudeCodeRuntime(options: ClaudeCodeRuntimeOptions): Mode
   return createProcessRuntime({
     id: `claude-code:${options.model}`,
     executable: options.executable ?? "claude",
-    capabilities: { structuredTools: true, structuredToolsFidelity: "native", streaming: false, abort: true, usage: true },
+    capabilities: {
+      structuredTools: true,
+      structuredToolsFidelity: "native",
+      outputTokenLimitFidelity: "unavailable",
+      streaming: false,
+      abort: true,
+      usage: true,
+    },
     codec: createClaudeCodeCodec(options.model),
     ...(options.cwd ? { cwd: options.cwd } : {}),
     ...(options.environment ? { environment: options.environment } : {}),
@@ -56,7 +69,15 @@ export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
       }
       const inputTokens = finiteNumber(parsed.usage?.input_tokens);
       const outputTokens = finiteNumber(parsed.usage?.output_tokens);
+      const cacheReadTokens = finiteNumber(parsed.usage?.cache_read_input_tokens);
+      const cacheWriteTokens = finiteNumber(parsed.usage?.cache_creation_input_tokens);
+      const costUsd = finiteNumber(parsed.total_cost_usd);
       const outputText = typeof parsed.result === "string" ? parsed.result : "";
+      const warnings = request.maxOutputTokens !== undefined
+        && outputTokens !== undefined
+        && outputTokens > request.maxOutputTokens
+        ? [`OUTPUT_TOKEN_LIMIT_NOT_ENFORCED: requested ${request.maxOutputTokens}, observed ${outputTokens}`]
+        : [];
       return Object.freeze({
         provider: "claude-code",
         model,
@@ -68,9 +89,13 @@ export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
           ...(inputTokens === undefined ? {} : { inputTokens }),
           ...(outputTokens === undefined ? {} : { outputTokens }),
           ...(inputTokens === undefined || outputTokens === undefined ? {} : { totalTokens: inputTokens + outputTokens }),
+          ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+          ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+          ...(costUsd === undefined ? {} : { costUsd }),
         }),
         latencyMs: output.latencyMs,
         ...(typeof parsed.stop_reason === "string" ? { stopReason: parsed.stop_reason } : {}),
+        ...(warnings.length ? { warnings: Object.freeze(warnings) } : {}),
       });
     },
     classifyFailure(output) {
