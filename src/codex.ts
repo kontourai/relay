@@ -21,7 +21,7 @@ interface CodexEvent {
 export function createCodexRuntime(options: CodexRuntimeOptions): ModelRuntime {
   return {
     id: `codex:${options.model}`,
-    capabilities: () => ({ structuredTools: true, structuredToolsFidelity: "native", streaming: false, abort: true, usage: true }),
+    capabilities: () => ({ structuredTools: true, structuredToolsFidelity: "native", outputTokenLimitFidelity: "unavailable", streaming: false, abort: true, usage: true }),
     async invoke(request: ModelInvocationRequest, invocationOptions?: ModelInvocationOptions): Promise<ModelInvocationResult> {
       if (invocationOptions?.signal?.aborted) {
         throw new ModelInvocationError("ABORTED", "Invocation aborted", false);
@@ -35,7 +35,7 @@ export function createCodexRuntime(options: CodexRuntimeOptions): ModelRuntime {
         const processRuntime = createProcessRuntime({
           id: `codex-process:${options.model}`,
           executable: options.executable ?? "codex",
-          capabilities: { structuredTools: true, structuredToolsFidelity: "native", streaming: false, abort: true, usage: true },
+          capabilities: { structuredTools: true, structuredToolsFidelity: "native", outputTokenLimitFidelity: "unavailable", streaming: false, abort: true, usage: true },
           codec: createCodexCodec(options.model, schemaPath),
           cwd: options.cwd ?? temporaryRoot,
           ...(options.environment ? { environment: options.environment } : {}),

@@ -72,6 +72,14 @@ explicit prompt-enforced mode reports `"prompted"`; an adapter without a
 structured-output path reports `"unavailable"`. Hosts can therefore apply one
 routing policy without branching the workload definition by runtime.
 
+Output-token-limit fidelity is declared separately. `"native"` means the
+runtime receives and enforces `maxOutputTokens`, `"approximated"` means the
+adapter can only make a best effort, and `"unavailable"` means the runtime has
+no per-invocation hard-limit control. The field is optional so existing custom
+runtimes remain source-compatible, while all built-in profiles declare it.
+Usage receipts may also include provider-reported cache read/write tokens and
+`costUsd`; Relay preserves those values but never estimates missing cost.
+
 ### Claude Code profile
 
 `@kontourai/relay/claude-code` uses Claude Code's non-interactive JSON output
@@ -88,6 +96,12 @@ const localRuntime = createClaudeCodeRuntime({ model: "sonnet" });
 
 Authentication remains owned by the installed harness. Relay does not inspect,
 copy, or persist its credential configuration.
+
+Claude Code does not currently expose a per-invocation output-token ceiling
+through this profile, so it reports `outputTokenLimitFidelity: "unavailable"`.
+When the CLI reports more output tokens than requested, Relay returns
+`OUTPUT_TOKEN_LIMIT_NOT_ENFORCED` in the result warnings. Its JSON receipt's
+cache-token and total-cost fields are preserved when present.
 
 ### Codex profile
 

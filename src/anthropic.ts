@@ -64,7 +64,7 @@ export function createAnthropicRuntime(options: AnthropicRuntimeOptions): ModelR
   const now = options.now ?? (() => performance.now());
   return {
     id: `${provider}:${options.model}`,
-    capabilities: (): ModelRuntimeCapabilities => ({ structuredTools: true, structuredToolsFidelity: "native", streaming: false, abort: true, usage: true }),
+    capabilities: (): ModelRuntimeCapabilities => ({ structuredTools: true, structuredToolsFidelity: "native", outputTokenLimitFidelity: "native", streaming: false, abort: true, usage: true }),
     async invoke(request: ModelInvocationRequest, invocationOptions?: ModelInvocationOptions): Promise<ModelInvocationResult> {
       if (invocationOptions?.signal?.aborted) throw new ModelInvocationError("ABORTED", "Invocation aborted", false);
       const started = now();

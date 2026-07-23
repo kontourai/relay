@@ -14,6 +14,7 @@ test("OpenCode defaults to rejecting structured tools honestly", () => {
   assert.deepEqual(runtime.capabilities(), {
     structuredTools: false,
     structuredToolsFidelity: "unavailable",
+    outputTokenLimitFidelity: "unavailable",
     streaming: false,
     abort: true,
     usage: true,

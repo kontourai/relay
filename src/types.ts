@@ -41,6 +41,12 @@ export interface ModelUsage {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  /** Input tokens served from a provider cache, when separately reported. */
+  cacheReadTokens?: number;
+  /** Input tokens written to a provider cache, when separately reported. */
+  cacheWriteTokens?: number;
+  /** Provider-reported invocation cost in US dollars; Relay never estimates it. */
+  costUsd?: number;
 }
 
 export interface ModelInvocationResult {
@@ -58,6 +64,11 @@ export interface ModelRuntimeCapabilities {
   structuredTools: boolean;
   /** Optional evidence about how structured tool output is produced. */
   structuredToolsFidelity?: "native" | "prompted" | "unavailable";
+  /**
+   * Whether maxOutputTokens is enforced by the runtime, only approximated, or
+   * unavailable. Optional for compatibility with pre-0.5 custom runtimes.
+   */
+  outputTokenLimitFidelity?: "native" | "approximated" | "unavailable";
   streaming: boolean;
   abort: boolean;
   usage: boolean;
