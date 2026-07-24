@@ -12,7 +12,10 @@ export class RecordingModelRuntime implements ModelRuntime {
   readonly records: InvocationReplayRecord[] = [];
   constructor(readonly runtime: ModelRuntime) {}
   get id(): string { return `recording:${this.runtime.id}`; }
-  capabilities(): ModelRuntimeCapabilities { return this.runtime.capabilities(); }
+  capabilities(): ModelRuntimeCapabilities {
+    const { physicalBatch: _physicalBatch, maxBatchSize: _maxBatchSize, ...capabilities } = this.runtime.capabilities();
+    return capabilities;
+  }
   async invoke(request: ModelInvocationRequest, options?: ModelInvocationOptions): Promise<ModelInvocationResult> {
     const result = await this.runtime.invoke(request, options);
     this.records.push(Object.freeze({ schemaVersion: 1, requestDigest: invocationDigest(request), request: structuredClone(request), result: structuredClone(result) }));

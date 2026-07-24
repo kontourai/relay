@@ -80,6 +80,17 @@ runtimes remain source-compatible, while all built-in profiles declare it.
 Usage receipts may also include provider-reported cache read/write tokens and
 `costUsd`; Relay preserves those values but never estimates missing cost.
 
+Physical batching is a separately declared capability. A runtime may expose
+`invokeBatch()` only when one call maps to one provider- or runtime-native
+physical operation; concurrent `invoke()` calls do not qualify. Batch outcomes
+retain request order and carry typed per-item failures so one rejected item
+does not erase successful siblings. The built-in hosted SDK and local harness
+profiles currently report physical batching as unavailable. `FakeModelRuntime`
+implements the contract for deterministic consumer and conformance tests.
+`checkPhysicalBatchConformance()` issues one caller-supplied probe batch and
+reports only counts and contract checks; it never copies request, response, or
+provider-diagnostic content into the report.
+
 ### Claude Code profile
 
 `@kontourai/relay/claude-code` uses Claude Code's non-interactive JSON output
