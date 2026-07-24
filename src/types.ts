@@ -72,16 +72,44 @@ export interface ModelRuntimeCapabilities {
   streaming: boolean;
   abort: boolean;
   usage: boolean;
+  /**
+   * True only when one `invokeBatch()` call is one physical runtime/provider
+   * operation. Concurrent `invoke()` calls are not a physical batch.
+   */
+  physicalBatch?: boolean;
+  /** Maximum logical requests accepted by one physical batch operation. */
+  maxBatchSize?: number;
 }
 
 export interface ModelInvocationOptions {
   signal?: AbortSignal;
 }
 
+/** Content-free, provider-neutral failure carried for one item in a batch. */
+export interface ModelInvocationFailure {
+  code: ModelInvocationErrorCode;
+  message: string;
+  retryable: boolean;
+}
+
+/** One positional outcome from a physical batch operation. */
+export type ModelBatchInvocationOutcome =
+  | { status: "fulfilled"; value: ModelInvocationResult }
+  | { status: "rejected"; reason: ModelInvocationFailure };
+
 export interface ModelRuntime {
   readonly id: string;
   capabilities(): ModelRuntimeCapabilities;
   invoke(request: ModelInvocationRequest, options?: ModelInvocationOptions): Promise<ModelInvocationResult>;
+  /**
+   * Optional provider/runtime-native physical batch operation. The returned
+   * array MUST have one positional outcome per request. Per-item failures are
+   * values; rejecting the promise means the complete physical operation failed.
+   */
+  invokeBatch?(
+    requests: readonly ModelInvocationRequest[],
+    options?: ModelInvocationOptions,
+  ): Promise<readonly ModelBatchInvocationOutcome[]>;
 }
 
 export type ModelInvocationErrorCode =
