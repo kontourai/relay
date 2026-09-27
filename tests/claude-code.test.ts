@@ -44,6 +44,8 @@ test("Claude Code profile projects one forced tool through native JSON schema", 
     latencyMs: 12,
   }, request);
   assert.deepEqual(result.toolCalls, [{ id: "claude-code-structured-output", name: "submit", input: { openings: 40 } }]);
+  // No modelUsage in this result, so the configured model is echoed and labelled as such.
+  assert.deepEqual([result.model, result.modelSource], ["sonnet", "configured"]);
   assert.deepEqual(result.usage, {
     inputTokens: 8,
     outputTokens: 4,
@@ -89,4 +91,21 @@ test("Claude Code profile rejects a successful response missing forced structure
     exitCode: 0,
     latencyMs: 1,
   }, request), (error: unknown) => error instanceof ModelInvocationError && error.code === "RUNTIME_FAILURE");
+});
+
+test("Claude Code reports the served model only when modelUsage names exactly one", () => {
+  const codec = createClaudeCodeCodec("haiku");
+  const plain = { messages: [{ role: "user" as const, content: "x" }] };
+  // Entry shape as the CLI writes it (keys trimmed); the key is the served model id.
+  const usageEntry = { inputTokens: 9, outputTokens: 43, costUSD: 0.008, canonicalModel: "claude-haiku-4-5" };
+  const parse = (modelUsage: unknown) => codec.parse({
+    stdout: JSON.stringify({ result: "ok", is_error: false, stop_reason: "end_turn", modelUsage }),
+    stderr: "", exitCode: 0, latencyMs: 1,
+  }, plain);
+  const single = parse({ "claude-haiku-4-5-20251001": usageEntry });
+  assert.deepEqual([single.model, single.modelSource], ["claude-haiku-4-5-20251001", "provider-reported"]);
+  const several = parse({ "claude-haiku-4-5-20251001": usageEntry, "claude-sonnet-4-5-20250929": usageEntry });
+  assert.deepEqual([several.model, several.modelSource], ["haiku", "configured"]);
+  const empty = parse({});
+  assert.deepEqual([empty.model, empty.modelSource], ["haiku", "configured"]);
 });

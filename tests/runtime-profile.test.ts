@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { ModelInvocationError } from "../src/index.js";
 import { createModelRuntimeProfile, parseModelRuntimeProfile } from "../src/runtime-profile.js";
+import { withStub } from "./support/anthropic-stub.js";
 
 describe("declarative runtime profiles", () => {
   it("preserves provider-qualified model identifiers", () => {
@@ -21,5 +23,19 @@ describe("declarative runtime profiles", () => {
   });
   it("does not source hosted credentials implicitly", () => {
     assert.throws(() => createModelRuntimeProfile({ profile: "anthropic", model: "claude-haiku-4-5" }), /requires an API key/);
+  });
+  it("forwards retry and timeout options to the anthropic profile", async () => {
+    const request = { messages: [{ role: "user" as const, content: "x" }] };
+    const rateLimited = (error: unknown) => error instanceof ModelInvocationError && error.code === "RATE_LIMITED";
+    await withStub("rate-limit", async (baseUrl, requestCount) => {
+      await assert.rejects(() => createModelRuntimeProfile({ profile: "anthropic", model: "m", apiKey: "test-key", baseUrl, maxRetries: 2 }).invoke(request), rateLimited);
+      assert.equal(requestCount(), 3);
+    });
+    await withStub("hang", async (baseUrl) => {
+      const started = performance.now();
+      await assert.rejects(() => createModelRuntimeProfile({ profile: "anthropic", model: "m", apiKey: "test-key", baseUrl, timeoutMs: 100 }).invoke(request),
+        (error: unknown) => error instanceof ModelInvocationError && error.code === "PROVIDER_UNAVAILABLE");
+      assert.ok(performance.now() - started < 5_000, "timeout was not forwarded");
+    });
   });
 });

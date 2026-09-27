@@ -21,6 +21,10 @@ export interface CreateModelRuntimeProfileOptions extends ModelRuntimeProfileSpe
   allowPromptedStructuredOutput?: boolean;
   apiKey?: string;
   baseUrl?: string;
+  /** Anthropic profile only: SDK retries per invocation (default 0). */
+  maxRetries?: number;
+  /** Anthropic profile only: per-request timeout in milliseconds. */
+  timeoutMs?: number;
 }
 
 export function parseModelRuntimeProfile(value: string): ModelRuntimeProfileSpec {
@@ -49,6 +53,12 @@ export function createModelRuntimeProfile(options: CreateModelRuntimeProfileOpti
       return createOpenCodeRuntime({ ...processOptions, structuredOutput: "prompted" });
     case "anthropic":
       if (!options.apiKey) throw new Error("anthropic runtime requires an API key");
-      return createAnthropicRuntime({ model: options.model, apiKey: options.apiKey, ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}) });
+      return createAnthropicRuntime({
+        model: options.model,
+        apiKey: options.apiKey,
+        ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+        ...(options.maxRetries === undefined ? {} : { maxRetries: options.maxRetries }),
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      });
   }
 }

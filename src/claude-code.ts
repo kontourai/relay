@@ -19,6 +19,8 @@ interface ClaudeCodeJsonResult {
     cache_creation_input_tokens?: unknown;
   };
   total_cost_usd?: unknown;
+  /** Keyed by the model id the provider served; can list several models for one run. */
+  modelUsage?: unknown;
   stop_reason?: unknown;
   is_error?: unknown;
 }
@@ -80,7 +82,7 @@ export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
         : [];
       return Object.freeze({
         provider: "claude-code",
-        model,
+        ...servedModel(parsed.modelUsage, model),
         outputText,
         toolCalls: Object.freeze(forcedTool
           ? [{ id: "claude-code-structured-output", name: forcedTool.name, input: parsed.structured_output }]
@@ -159,6 +161,19 @@ function classifyClaudeCodeFailure(output: ProcessInvocationOutput): ModelInvoca
     return new ModelInvocationError("PROVIDER_UNAVAILABLE", "Claude Code runtime is unavailable", true);
   }
   return new ModelInvocationError("RUNTIME_FAILURE", `Claude Code failed with exit code ${output.exitCode}`, false);
+}
+
+/**
+ * Claude Code reports usage per served model id. Exactly one entry identifies
+ * the model that served the run; zero or several (for example a helper model
+ * used alongside the main one) would make any single choice a guess.
+ */
+function servedModel(modelUsage: unknown, configured: string): Pick<ModelInvocationResult, "model" | "modelSource"> {
+  if (typeof modelUsage === "object" && modelUsage !== null && !Array.isArray(modelUsage)) {
+    const models = Object.keys(modelUsage);
+    if (models.length === 1 && models[0]) return { model: models[0], modelSource: "provider-reported" };
+  }
+  return { model: configured, modelSource: "configured" };
 }
 
 function finiteNumber(value: unknown): number | undefined {

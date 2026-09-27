@@ -100,6 +100,7 @@ export function createOpenCodeCodec(model: string, structuredOutput: "reject" | 
       return Object.freeze({
         provider: "opencode",
         model,
+        modelSource: "configured",
         outputText: forcedTool ? "" : text,
         toolCalls: Object.freeze(forcedTool
           ? [{ id: "opencode-prompted-output", name: forcedTool.name, input: structured }]

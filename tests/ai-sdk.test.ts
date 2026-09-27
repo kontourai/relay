@@ -41,6 +41,30 @@ describe("AI SDK v3 adapter", () => {
     assert.equal(result.usage.totalTokens, 7);
   });
 
+  it("labels the model provider-reported only when the AI SDK response carries a model id", async () => {
+    const modelReporting = (modelId: string | undefined): LanguageModelV3 => ({
+      specificationVersion: "v3",
+      provider: "fixture-ai",
+      modelId: "configured-alias",
+      supportedUrls: {},
+      async doGenerate() {
+        return {
+          content: [{ type: "text", text: "ok" }],
+          finishReason: { unified: "stop", raw: "stop" },
+          usage: aiUsage,
+          warnings: [],
+          ...(modelId === undefined ? {} : { response: { modelId } }),
+        };
+      },
+      async doStream() { throw new Error("not used"); },
+    });
+    const request: ModelInvocationRequest = { messages: [{ role: "user", content: "x" }] };
+    const reported = await createAiSdkRuntime({ model: modelReporting("served-snapshot") }).invoke(request);
+    assert.deepEqual([reported.model, reported.modelSource], ["served-snapshot", "provider-reported"]);
+    const unreported = await createAiSdkRuntime({ model: modelReporting(undefined) }).invoke(request);
+    assert.deepEqual([unreported.model, unreported.modelSource], ["configured-alias", "configured"]);
+  });
+
   it("presents a Relay runtime as a buffered AI SDK model", async () => {
     let captured: ModelInvocationRequest | undefined;
     const runtime: ModelRuntime = {

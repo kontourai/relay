@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { checkPhysicalBatchConformance, checkRuntimeConformance, FakeModelRuntime, invocationDigest, ModelInvocationError, RecordingModelRuntime, ReplayModelRuntime } from "../src/index.js";
 
 const request = { messages: [{ role: "user" as const, content: "hello" }], metadata: { traceId: "trace:1" } };
-const result = { provider: "fixture", model: "fixture-1", outputText: "ok", toolCalls: [], usage: { totalTokens: 2 }, latencyMs: 0 };
+const result = { provider: "fixture", model: "fixture-1", modelSource: "configured" as const, outputText: "ok", toolCalls: [], usage: { totalTokens: 2 }, latencyMs: 0 };
 
 describe("Relay core", () => {
   it("produces order-independent request digests", () => {
@@ -17,6 +17,10 @@ describe("Relay core", () => {
     const serialized = JSON.stringify(recording.records);
     assert.doesNotMatch(serialized, /apiKey|authorization/i);
     assert.deepEqual(await new ReplayModelRuntime(recording.records).invoke(request), result);
+    // A replay record persisted as JSON keeps the model's provenance.
+    const reloaded = JSON.parse(serialized) as typeof recording.records;
+    assert.equal(reloaded[0]?.result.modelSource, "configured");
+    assert.equal((await new ReplayModelRuntime(reloaded).invoke(request)).modelSource, "configured");
     await assert.rejects(() => new ReplayModelRuntime(recording.records).invoke({ messages: [{ role: "user", content: "different" }] }),
       (error: unknown) => error instanceof ModelInvocationError && error.code === "INVALID_REQUEST");
   });
@@ -24,6 +28,13 @@ describe("Relay core", () => {
   it("provides a runtime conformance probe", async () => {
     const report = await checkRuntimeConformance(new FakeModelRuntime([result]));
     assert.equal(report.passed, true);
+  });
+
+  it("fails conformance when a runtime does not say where its model identity came from", async () => {
+    const { modelSource: _modelSource, ...undeclared } = result;
+    const report = await checkRuntimeConformance(new FakeModelRuntime([undeclared]));
+    assert.equal(report.passed, false);
+    assert.deepEqual(report.checks.find(({ name }) => name === "model-source"), { name: "model-source", passed: false, detail: "not declared" });
   });
 
   it("does not leak a delegate's physical-batch claim through a single-call recording wrapper", async () => {

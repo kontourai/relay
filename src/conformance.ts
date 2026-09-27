@@ -111,6 +111,11 @@ export async function checkRuntimeConformance(runtime: ModelRuntime): Promise<Ru
   try {
     const result = await runtime.invoke(request);
     checks.push({ name: "identity", passed: Boolean(result.provider && result.model), detail: `${result.provider}/${result.model}` });
+    checks.push({
+      name: "model-source",
+      passed: result.modelSource === "provider-reported" || result.modelSource === "configured",
+      detail: result.modelSource ?? "not declared",
+    });
     checks.push({ name: "shape", passed: Array.isArray(result.toolCalls) && result.latencyMs >= 0, detail: "normalized result" });
   } catch (error) {
     checks.push({ name: "invoke", passed: false, detail: error instanceof Error ? error.message : String(error) });

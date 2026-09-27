@@ -49,9 +49,26 @@ export interface ModelUsage {
   costUsd?: number;
 }
 
+/**
+ * Where `ModelInvocationResult.model` came from: `provider-reported` is the
+ * model identity the provider returned for this invocation; `configured` is
+ * the model the runtime was configured with, echoed because the runtime has no
+ * provider report of the served model.
+ */
+export type ModelSource = "provider-reported" | "configured";
+
 export interface ModelInvocationResult {
   provider: string;
+  /**
+   * The served model when `modelSource` is `provider-reported`, otherwise the
+   * configured model (which may be an alias the provider resolves differently).
+   */
   model: string;
+  /**
+   * Every bundled runtime sets this and conformance requires it. Optional in
+   * the type for one release so third-party runtimes keep compiling.
+   */
+  modelSource?: ModelSource;
   outputText: string;
   toolCalls: readonly ModelToolCall[];
   usage: ModelUsage;

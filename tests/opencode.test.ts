@@ -38,6 +38,7 @@ test("OpenCode prompted mode projects JSON events with an explicit fidelity warn
     latencyMs: 10,
   }, request);
   assert.deepEqual(result.toolCalls, [{ id: "opencode-prompted-output", name: "submit", input: { openings: 40 } }]);
+  assert.deepEqual([result.model, result.modelSource], ["zai/glm-5", "configured"]);
   assert.deepEqual(result.usage, { inputTokens: 7, outputTokens: 3, totalTokens: 10 });
   assert.match(result.warnings?.[0] ?? "", /prompt-enforced/);
 });
