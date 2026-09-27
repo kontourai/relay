@@ -13,6 +13,7 @@ import type {
   LanguageModelV3Usage,
   SharedV3Warning,
 } from "@ai-sdk/provider";
+import { classifyInvocationError } from "./errors.js";
 import {
   ModelInvocationError,
   type JsonSchema,
@@ -193,8 +194,7 @@ export function createAiSdkRuntime(options: AiSdkRuntimeOptions): ModelRuntime {
         };
       } catch (error) {
         if (invocationOptions?.signal?.aborted) throw new ModelInvocationError("ABORTED", "Invocation aborted", false, { cause: error });
-        if (error instanceof ModelInvocationError) throw error;
-        throw new ModelInvocationError("RUNTIME_FAILURE", "AI SDK model invocation failed", false, { cause: error });
+        throw classifyInvocationError(error, "AI SDK model invocation failed");
       }
     },
   };

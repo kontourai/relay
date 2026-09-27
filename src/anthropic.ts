@@ -1,3 +1,4 @@
+import { classifyInvocationError } from "./errors.js";
 import { ModelInvocationError, type ModelInvocationOptions, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime, type ModelRuntimeCapabilities } from "./types.js";
 
 interface AnthropicMessage {
@@ -19,15 +20,6 @@ export interface AnthropicRuntimeOptions {
   provider?: string;
   defaultMaxOutputTokens?: number;
   now?: () => number;
-}
-
-function classify(error: unknown): ModelInvocationError {
-  if (error instanceof ModelInvocationError) return error;
-  const status = typeof error === "object" && error !== null && "status" in error ? Number((error as { status: unknown }).status) : undefined;
-  if (status === 401 || status === 403) return new ModelInvocationError("AUTHENTICATION_FAILED", "Provider authentication failed", false, { cause: error });
-  if (status === 429) return new ModelInvocationError("RATE_LIMITED", "Provider rate limit reached", true, { cause: error });
-  if (status !== undefined && status >= 500) return new ModelInvocationError("PROVIDER_UNAVAILABLE", "Provider unavailable", true, { cause: error });
-  return new ModelInvocationError("RUNTIME_FAILURE", "Model invocation failed", false, { cause: error });
 }
 
 async function clientFor(options: AnthropicRuntimeOptions): Promise<AnthropicMessagesClient> {
@@ -97,7 +89,7 @@ export function createAnthropicRuntime(options: AnthropicRuntimeOptions): ModelR
         });
       } catch (error) {
         if (invocationOptions?.signal?.aborted) throw new ModelInvocationError("ABORTED", "Invocation aborted", false, { cause: error });
-        throw classify(error);
+        throw classifyInvocationError(error, "Model invocation failed");
       }
     },
   };
