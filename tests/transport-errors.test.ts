@@ -17,6 +17,12 @@ class APIConnectionError extends APIError {
 class APIConnectionTimeoutError extends APIConnectionError {}
 const fetchFailed = (code: string) => new TypeError("fetch failed", { cause: Object.assign(new Error(`socket ${code}`), { code }) });
 
+class MinifiedError extends Error {
+  constructor(cause: unknown) { super("Connection error.", { cause }); }
+}
+// Wraps an error in `levels` further plain errors, pushing its cause chain deeper.
+const nest = (error: Error, levels: number): Error => levels === 0 ? error : nest(new Error("wrapped", { cause: error }), levels - 1);
+
 // @ai-sdk/provider-utils wraps a failed fetch as a status-less APICallError
 // whose cause is the socket error.
 const callError = (statusCode: number | undefined, cause?: unknown) => new APICallError({
@@ -49,6 +55,31 @@ const table: readonly { label: string; anthropic: unknown; aiSdk: unknown; expec
   { label: "socket closed by peer", anthropic: new APIConnectionError(fetchFailed("UND_ERR_SOCKET")), aiSdk: callError(undefined, fetchFailed("UND_ERR_SOCKET").cause), expected: ["PROVIDER_UNAVAILABLE", true] },
   { label: "unclassifiable error", anthropic: new Error("secret provider body"), aiSdk: new Error("secret provider body"), expected: ["RUNTIME_FAILURE", false] },
   { label: "unmapped HTTP status", anthropic: new APIError(418, "418"), aiSdk: callError(418), expected: ["RUNTIME_FAILURE", false] },
+  { label: "HTTP 501 is not transient", anthropic: new APIError(501, "501"), aiSdk: callError(501), expected: ["RUNTIME_FAILURE", false] },
+  { label: "status outside the HTTP range", anthropic: new APIError(999, "999"), aiSdk: callError(999), expected: ["RUNTIME_FAILURE", false] },
+  { label: "numeric string status", anthropic: Object.assign(new Error("x"), { status: "503" }), aiSdk: Object.assign(new Error("x"), { statusCode: "503" }), expected: ["PROVIDER_UNAVAILABLE", true] },
+  { label: "non-numeric string status", anthropic: Object.assign(new Error("x"), { status: "busy" }), aiSdk: Object.assign(new Error("x"), { statusCode: "busy" }), expected: ["RUNTIME_FAILURE", false] },
+  {
+    // Minified SDK class names defeat the constructor check, so only the
+    // socket code, two causes deep, identifies the failure.
+    label: "socket code two causes deep behind unrecognised classes",
+    anthropic: new MinifiedError(fetchFailed("ECONNRESET")),
+    aiSdk: new MinifiedError(fetchFailed("ECONNRESET")),
+    expected: ["PROVIDER_UNAVAILABLE", true],
+  },
+  { label: "socket code beyond the cause bound", anthropic: nest(fetchFailed("ECONNRESET"), 3), aiSdk: nest(fetchFailed("ECONNRESET"), 3), expected: ["RUNTIME_FAILURE", false] },
+  {
+    label: "AI SDK marks a status-less failure retryable",
+    anthropic: Object.assign(new Error("x"), { isRetryable: true, cause: Object.assign(new Error("unreachable"), { code: "EHOSTUNREACH" }) }),
+    aiSdk: new APICallError({ message: "Cannot connect to API", url: "https://provider.invalid/v1", requestBodyValues: {}, isRetryable: true, cause: Object.assign(new Error("unreachable"), { code: "EHOSTUNREACH" }) }),
+    expected: ["PROVIDER_UNAVAILABLE", true],
+  },
+  {
+    label: "a class merely named TimeoutError",
+    anthropic: Object.assign(new Error("tool timed out"), { name: "TimeoutError" }),
+    aiSdk: Object.assign(new Error("tool timed out"), { name: "TimeoutError" }),
+    expected: ["RUNTIME_FAILURE", false],
+  },
 ];
 
 const anthropicThrowing = (error: unknown): ModelRuntime =>
