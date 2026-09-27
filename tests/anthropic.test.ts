@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import { createAnthropicRuntime, type AnthropicMessagesClient } from "../src/anthropic.js";
 import { ModelInvocationError } from "../src/index.js";
+import { withStub } from "./support/anthropic-stub.js";
 
 describe("Anthropic-compatible runtime", () => {
   it("normalizes forced tools, identity, usage, latency, and stop reason", async () => {
@@ -62,26 +61,6 @@ describe("Anthropic-compatible runtime", () => {
 // These run the installed @anthropic-ai/sdk against a local HTTP stub, so they
 // count the requests the SDK really sends rather than the options Relay passes.
 describe("Anthropic-compatible runtime over the SDK", () => {
-  async function withStub(
-    respond: "rate-limit" | "hang",
-    run: (baseUrl: string, requestCount: () => number) => Promise<void>,
-  ): Promise<void> {
-    let count = 0;
-    const server: Server = createServer((request, response) => {
-      count++;
-      request.resume();
-      if (respond === "hang") return;
-      response.writeHead(429, { "content-type": "application/json", "retry-after-ms": "1" });
-      response.end(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "slow down" } }));
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    try {
-      await run(`http://127.0.0.1:${String((server.address() as AddressInfo).port)}`, () => count);
-    } finally {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
-  }
   const request = { messages: [{ role: "user" as const, content: "x" }] };
   const rateLimited = (error: unknown) => error instanceof ModelInvocationError && error.code === "RATE_LIMITED" && error.retryable;
 

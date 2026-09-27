@@ -40,10 +40,12 @@ await checkRuntimeConformance(runtime);
 `"configured"` means the runtime echoed the model it was configured with, which
 may be an alias the provider resolved to something else. The Anthropic-compatible
 runtime reports the response's model, the AI SDK bridge reports
-`response.modelId` when the provider model supplies one, and the Claude Code,
-Codex, and OpenCode harnesses report `configured`. Every bundled runtime sets
-`modelSource` and conformance requires it; the field is optional in the type for
-one release so third-party runtimes keep compiling.
+`response.modelId` when the provider model supplies one, the Claude Code harness
+reports the served model when its `modelUsage` names exactly one model, and the
+Codex and OpenCode harnesses report `configured`. Every bundled runtime sets
+`modelSource` and `checkRuntimeConformance` fails a runtime that does not; the
+field is optional in the type for one release so third-party runtimes keep
+compiling.
 
 ## Process-backed harnesses
 
@@ -200,6 +202,7 @@ the only component retrying. Pass `maxRetries` to opt back in and `timeoutMs` to
 bound each request (unset keeps the SDK's default). A timeout surfaces as a
 retryable `PROVIDER_UNAVAILABLE` failure. Both options are ignored when a
 `client` is injected, because the caller owns that client's configuration.
+`createModelRuntimeProfile` forwards both options to the `anthropic` profile.
 
 ## AI SDK v3 framework adapter
 
