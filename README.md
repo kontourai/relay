@@ -19,6 +19,7 @@ import { FakeModelRuntime, checkRuntimeConformance } from "@kontourai/relay";
 const runtime = new FakeModelRuntime([{
   provider: "fixture",
   model: "fixture-1",
+  modelSource: "configured",
   outputText: "",
   toolCalls: [{ id: "1", name: "submit", input: { value: 42 } }],
   usage: { totalTokens: 10 },
@@ -33,6 +34,16 @@ const result = await runtime.invoke({
 
 await checkRuntimeConformance(runtime);
 ```
+
+`result.model` is the served model only when `result.modelSource` is
+`"provider-reported"`: the provider returned that identity for this invocation.
+`"configured"` means the runtime echoed the model it was configured with, which
+may be an alias the provider resolved to something else. The Anthropic-compatible
+runtime reports the response's model, the AI SDK bridge reports
+`response.modelId` when the provider model supplies one, and the Claude Code,
+Codex, and OpenCode harnesses report `configured`. Every bundled runtime sets
+`modelSource` and conformance requires it; the field is optional in the type for
+one release so third-party runtimes keep compiling.
 
 ## Process-backed harnesses
 
@@ -182,6 +193,13 @@ const runtime = createAnthropicRuntime({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 ```
+
+One `invoke()` sends exactly one provider request: the SDK's own retries are off
+by default (`maxRetries: 0`), so the caller or router that records attempts is
+the only component retrying. Pass `maxRetries` to opt back in and `timeoutMs` to
+bound each request (unset keeps the SDK's default). A timeout surfaces as a
+retryable `PROVIDER_UNAVAILABLE` failure. Both options are ignored when a
+`client` is injected, because the caller owns that client's configuration.
 
 ## AI SDK v3 framework adapter
 

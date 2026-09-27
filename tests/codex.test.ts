@@ -75,6 +75,7 @@ process.stdout.write(JSON.stringify({type:"turn.completed",usage:{input_tokens:2
     });
     const result = await runtime.invoke(request);
     assert.deepEqual(result.toolCalls[0]?.input, { openings: 40 });
+    assert.deepEqual([result.model, result.modelSource], ["fixture-model", "configured"]);
     const schemaPath = await readFile(recordPath, "utf8");
     await assert.rejects(access(schemaPath), (error: unknown) =>
       typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT");

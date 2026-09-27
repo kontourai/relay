@@ -44,6 +44,8 @@ test("Claude Code profile projects one forced tool through native JSON schema", 
     latencyMs: 12,
   }, request);
   assert.deepEqual(result.toolCalls, [{ id: "claude-code-structured-output", name: "submit", input: { openings: 40 } }]);
+  // The JSON result carries no served-model field Relay reads, so the configured model is echoed and labelled as such.
+  assert.deepEqual([result.model, result.modelSource], ["sonnet", "configured"]);
   assert.deepEqual(result.usage, {
     inputTokens: 8,
     outputTokens: 4,

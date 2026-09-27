@@ -157,6 +157,7 @@ export function createCodexCodec(model: string, schemaPath?: string): ProcessRun
       return Object.freeze({
         provider: "codex",
         model,
+        modelSource: "configured",
         outputText: forcedTool ? "" : text,
         toolCalls: Object.freeze(forcedTool
           ? [{ id: "codex-structured-output", name: forcedTool.name, input: structuredOutput }]

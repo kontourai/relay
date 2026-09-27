@@ -182,9 +182,12 @@ export function createAiSdkRuntime(options: AiSdkRuntimeOptions): ModelRuntime {
         const toolCalls = generated.content.filter((part) => part.type === "tool-call").map((part) => ({ id: part.toolCallId, name: part.toolName, input: JSON.parse(part.input) as unknown }));
         const inputTokens = generated.usage.inputTokens.total;
         const outputTokens = generated.usage.outputTokens.total;
+        const reportedModel = generated.response?.modelId;
         return {
           provider: options.model.provider,
-          model: generated.response?.modelId ?? options.model.modelId,
+          ...(reportedModel
+            ? { model: reportedModel, modelSource: "provider-reported" as const }
+            : { model: options.model.modelId, modelSource: "configured" as const }),
           outputText: text,
           toolCalls,
           usage: { ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }), ...(inputTokens === undefined || outputTokens === undefined ? {} : { totalTokens: inputTokens + outputTokens }) },

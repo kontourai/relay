@@ -81,6 +81,7 @@ export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
       return Object.freeze({
         provider: "claude-code",
         model,
+        modelSource: "configured",
         outputText,
         toolCalls: Object.freeze(forcedTool
           ? [{ id: "claude-code-structured-output", name: forcedTool.name, input: parsed.structured_output }]

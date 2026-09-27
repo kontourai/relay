@@ -19,6 +19,16 @@ export interface AnthropicRuntimeOptions {
   model: string;
   provider?: string;
   defaultMaxOutputTokens?: number;
+  /**
+   * SDK retries per invocation. Defaults to 0 so one `invoke()` is one provider
+   * request and retrying stays with the caller. Ignored when `client` is supplied.
+   */
+  maxRetries?: number;
+  /**
+   * Per-request timeout in milliseconds, passed to the SDK. Unset keeps the
+   * SDK's own default. Ignored when `client` is supplied.
+   */
+  timeoutMs?: number;
   now?: () => number;
 }
 
@@ -27,9 +37,14 @@ async function clientFor(options: AnthropicRuntimeOptions): Promise<AnthropicMes
   const apiKey = options.apiKey ?? process.env["ANTHROPIC_API_KEY"];
   if (!apiKey) throw new ModelInvocationError("AUTHENTICATION_FAILED", "No Anthropic-compatible API key supplied", false);
   const moduleName = "@anthropic-ai/sdk";
-  const loaded = await (Function("m", "return import(m)")(moduleName) as Promise<{ default: new (input: { apiKey: string; baseURL?: string }) => { messages: AnthropicMessagesClient } }>);
-  const clientOptions = options.baseUrl ? { apiKey, baseURL: options.baseUrl } : { apiKey };
-  return new loaded.default(clientOptions).messages;
+  const loaded = await (Function("m", "return import(m)")(moduleName) as Promise<{ default: new (input: { apiKey: string; baseURL?: string; maxRetries: number; timeout?: number }) => { messages: AnthropicMessagesClient } }>);
+  return new loaded.default({
+    apiKey,
+    ...(options.baseUrl ? { baseURL: options.baseUrl } : {}),
+    // The SDK retries twice by default, invisibly to the result and to callers' budgets.
+    maxRetries: options.maxRetries ?? 0,
+    ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
+  }).messages;
 }
 
 function anthropicMessages(request: ModelInvocationRequest): Array<Record<string, unknown>> {
@@ -80,7 +95,9 @@ export function createAnthropicRuntime(options: AnthropicRuntimeOptions): ModelR
           .map(({ id, name, input }) => ({ id, name, input }));
         return Object.freeze({
           provider,
-          model: response.model,
+          ...(typeof response.model === "string" && response.model
+            ? { model: response.model, modelSource: "provider-reported" as const }
+            : { model: options.model, modelSource: "configured" as const }),
           outputText,
           toolCalls: Object.freeze(toolCalls),
           usage: Object.freeze({ inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens, totalTokens: response.usage.input_tokens + response.usage.output_tokens }),

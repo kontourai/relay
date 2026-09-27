@@ -6,7 +6,7 @@ export { ModelInvocationError } from "./types.js";
 export type {
   JsonSchema, ModelBatchInvocationOutcome, ModelInvocationErrorCode, ModelInvocationFailure, ModelInvocationOptions,
   ModelInvocationRequest, ModelInvocationResult, ModelMessage, ModelMessageContentPart, ModelRuntime,
-  ModelRuntimeCapabilities, ModelTool, ModelToolCall, ModelToolChoice, ModelUsage,
+  ModelRuntimeCapabilities, ModelSource, ModelTool, ModelToolCall, ModelToolChoice, ModelUsage,
 } from "./types.js";
 export type { InvocationReplayRecord } from "./replay.js";
 export type { PhysicalBatchConformanceReport, RuntimeConformanceReport } from "./conformance.js";
