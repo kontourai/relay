@@ -1,4 +1,4 @@
-import type { ModelTool } from "./types.js";
+import { ModelInvocationError, type ModelTool } from "./types.js";
 
 /**
  * Prompt lines carrying a forced tool's description and its schema's field
@@ -66,14 +66,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// Bounds the text scanned, so a noisy stream cannot make classification slow.
+// Bounds the text matched line by line. A long stream is scanned at its head
+// and its tail, because a CLI usually prints its error last.
 const maxScannedChars = 16 * 1024;
 
-// Deliberately narrow: a limit kind counts only inside the wording a CLI uses
-// to say the limit was hit. Unrecognised wording stays a RUNTIME_FAILURE, which
-// is the safe direction; a context-window or turn limit must never read as a
-// rate limit.
-const limitKind = "session|weekly|opus|sonnet|fast|monthly spend|monthly|usage credit|free usage|usage|rate";
+// The kinds below are matched only inside wording that says the limit was hit,
+// so a context-window, token, turn, or connection limit is not read as a usage
+// limit. This narrowing applies to the usage/session/quota wording only.
+const limitKind = "session|weekly|opus|sonnet|fast|monthly spend|monthly|usage credit|free usage|usage";
+
+// Any mention of a rate limit counts, with no narrowing: classifying one too
+// many costs a router one extra attempt, while missing one stops fallback.
+const rateLimitMention = /rate.?limit|too many requests|too_many_requests/i;
 
 const namedLimits: ReadonlyArray<[RegExp, string]> = [
   [new RegExp(`\\b(?:hit|reached|exceeded) your (${limitKind}) limit\\b`, "i"), "$1 limit reached"],
@@ -83,7 +87,7 @@ const namedLimits: ReadonlyArray<[RegExp, string]> = [
   [/\bout of (?:usage credits|extra usage)\b/i, "usage credits exhausted"],
   [/\bcredits? (?:are )?(?:depleted|exhausted)\b/i, "usage credits exhausted"],
   [/\b(?:insufficient_quota|quota (?:exceeded|exhausted)|exceeded your (?:current )?quota)\b/i, "quota exhausted"],
-  [/\brate[ -]limited\b|\brate_limit_(?:exceeded|error)\b|\b(?:hit|reached|exceeded) (?:a|the) rate limit\b|\btoo many requests\b|\btoo_many_requests\b/i, "rate limit reached"],
+  [rateLimitMention, "rate limit reached"],
 ];
 
 const month = "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]{0,6}";
@@ -104,8 +108,11 @@ const resetIn = new RegExp(`\\b(?:resets?|try again|retry)(?: after)? in (${dura
  * limit wording, so an unrelated "try again in 5 seconds" is not attributed to it.
  */
 export function detectUsageLimit(texts: readonly string[]): string | undefined {
-  const lines = texts.join("\n").slice(0, maxScannedChars).split(/\r?\n/);
-  for (const line of lines) {
+  const text = texts.join("\n");
+  const scanned = text.length <= 2 * maxScannedChars
+    ? text
+    : `${text.slice(0, maxScannedChars)}\n${text.slice(-maxScannedChars)}`;
+  for (const line of scanned.split(/\r?\n/)) {
     for (const [pattern, template] of namedLimits) {
       const match = pattern.exec(line);
       if (!match) continue;
@@ -116,7 +123,35 @@ export function detectUsageLimit(texts: readonly string[]): string | undefined {
       return `${phrase}${at ? `; resets ${tidy(at)}` : within ? `; resets in ${tidy(within)}` : ""}`;
     }
   }
-  return undefined;
+  // A rate-limit mention between the scanned head and tail still counts.
+  return rateLimitMention.test(text) ? "rate limit reached" : undefined;
+}
+
+export interface HarnessFailureEvidence {
+  /** The CLI's own structured error reported an authentication status. */
+  structuredAuth?: boolean;
+  /** A limit reason read from the CLI's own structured error report. */
+  structuredLimit?: string | undefined;
+  stderr: string;
+}
+
+/**
+ * Decides between an authentication failure and a rate limit, or neither.
+ * The CLI's structured error report is trusted before stderr text: stderr is
+ * matched loosely and often carries incidental lines (an MCP server's OAuth
+ * warning, a path containing "auth") beside a real limit event. When stderr is
+ * the only evidence, authentication wins over a limit mentioned in it.
+ */
+export function classifyAuthOrLimit(label: string, evidence: HarnessFailureEvidence): ModelInvocationError | undefined {
+  const authenticationFailed = () => new ModelInvocationError("AUTHENTICATION_FAILED", `${label} authentication failed`, false);
+  // Retryable, as RATE_LIMITED is from the API adapters: a router uses the flag
+  // to decide whether it may try again or move to its next candidate.
+  const rateLimited = (reason: string) => new ModelInvocationError("RATE_LIMITED", `${label} rate limited: ${reason}`, true);
+  if (evidence.structuredAuth) return authenticationFailed();
+  if (evidence.structuredLimit) return rateLimited(evidence.structuredLimit);
+  if (/auth|login|credential|api key/.test(evidence.stderr.toLowerCase())) return authenticationFailed();
+  const reason = detectUsageLimit([evidence.stderr]);
+  return reason ? rateLimited(reason) : undefined;
 }
 
 function tidy(value: string): string {

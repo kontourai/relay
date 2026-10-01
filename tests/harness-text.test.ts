@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { detectUsageLimit, toolDescriptionLines } from "../src/harness-text.js";
+import { priorRateLimitStderr } from "./stderr-fixtures.js";
 
 test("tool description lines carry the tool description and the field descriptions it collects", () => {
   assert.deepEqual(toolDescriptionLines({
@@ -94,20 +95,28 @@ test("usage-limit detection recognises other limit wordings the CLIs and provide
     ["{\"type\":\"rate_limit_error\"}", "rate limit reached"],
     ["Error: Too Many Requests", "rate limit reached"],
     ["insufficient_quota", "quota exhausted"],
+    ["Usage limit exceeded for this workspace", "usage limit reached"],
+    ["session limit hit", "session limit reached"],
+    ["You have exceeded your monthly spend limit", "monthly spend limit reached"],
+    ["{\"error\":{\"type\":\"usage_limit_exceeded\"}}", "usage limit reached"],
+    ["{\"error\":{\"code\":\"rate_limit_exceeded\"}}", "rate limit reached"],
+    ["quota exhausted", "quota exhausted"],
+    ["Your credits are depleted", "usage credits exhausted"],
   ];
   for (const [text, expected] of cases) assert.equal(detectUsageLimit([text]), expected, text);
 });
 
-test("usage-limit detection does not mistake other limits or passing mentions for a rate limit", () => {
+test("usage-limit detection keeps every rate-limit mention the earlier stderr check matched", () => {
+  for (const text of priorRateLimitStderr) assert.equal(detectUsageLimit([text]), "rate limit reached", text);
+});
+
+test("usage-limit detection does not mistake other limits or passing mentions for a usage limit", () => {
   for (const text of [
     "you have reached your context window limit",
     "reached your output token limit",
     "hit your max turns limit",
     "MCP server exceeded session limit of 5 connections",
-    "rate-limits.md not found",
-    "log: ratelimit headers remaining=4999",
     "fast limit switch tripped",
-    "Error: not logged in. Run login. (See rate limits at https://example.test/limits)",
     "401 Unauthorized: invalid api key. usage limit info unavailable",
   ]) {
     assert.equal(detectUsageLimit([text]), undefined, text);
@@ -123,9 +132,16 @@ test("usage-limit reset time comes only from the line that reported the limit", 
   assert.equal(detectUsageLimit(["noise", "usage limit reached. Try again in 5 seconds."]), "usage limit reached; resets in 5 seconds");
 });
 
-test("usage-limit detection scans a bounded prefix of the output", () => {
-  // The bound is 16 KiB; pinned here as a literal rather than read from the source.
-  const bound = 16384;
-  assert.equal(detectUsageLimit(["x".repeat(bound), "usage limit reached"]), undefined);
-  assert.equal(detectUsageLimit(["x".repeat(bound - 100), "usage limit reached"]), "usage limit reached");
+test("usage-limit detection reads the head and the tail of a long output", () => {
+  // The line-by-line window is 16 KiB at each end; pinned here as a literal.
+  const window = 16384;
+  const noise = "x".repeat(100);
+  const lines = (count: number) => Array.from({ length: count }, () => noise);
+  // A limit line after far more than 16K of noise, where a CLI prints its error.
+  assert.equal(detectUsageLimit([...lines(2000), "You've hit your weekly limit · resets Oct 4"]), "weekly limit reached; resets Oct 4");
+  assert.equal(detectUsageLimit(["You've hit your weekly limit · resets Oct 4", ...lines(2000)]), "weekly limit reached; resets Oct 4");
+  // Outside both windows, usage wording is not scanned, but a rate-limit mention still counts.
+  assert.ok(lines(400).join("\n").length > 2 * window);
+  assert.equal(detectUsageLimit([...lines(400), "You've hit your weekly limit · resets Oct 4", ...lines(400)]), undefined);
+  assert.equal(detectUsageLimit([...lines(400), "RateLimitError: 429", ...lines(400)]), "rate limit reached");
 });

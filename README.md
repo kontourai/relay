@@ -176,14 +176,28 @@ it inside the schema.
 
 When a CLI reports that its own usage limit or rate limit was hit, the profile
 fails with `RATE_LIMITED` and `retryable: true`, the same code and flag the API
-adapters return for an HTTP 429. An authentication failure takes precedence
-over a limit mentioned in the same output. The message carries a short reason
-such as `Claude Code rate limited: weekly limit reached; resets Oct 4`. The
-reason is assembled from fixed phrases and a date, time, or duration matched by
-a strict pattern, read from the line that reported the limit; the CLI's output
-is never copied into it. Recognition is deliberately narrow: limit wording the
-profile does not know stays `RUNTIME_FAILURE`, and the reset time is available
-only as text in the message.
+adapters return for an HTTP 429. The message carries a short reason such as
+`Claude Code rate limited: weekly limit reached; resets Oct 4`. The reason is
+assembled from fixed phrases and a date, time, or duration matched by a strict
+pattern, read from the line that reported the limit; the CLI's output is never
+copied into it, and the reset time is available only as text in the message.
+
+Evidence is weighed in this order, on a nonzero exit and on a failed run that
+exits zero alike:
+
+1. the CLI's structured error report with an authentication status (401 or
+   403, where the CLI reports one): `AUTHENTICATION_FAILED`;
+2. the CLI's structured error report naming a limit or carrying status 429:
+   `RATE_LIMITED`, even if stderr holds an unrelated line that looks like an
+   authentication problem;
+3. stderr text that looks like an authentication problem:
+   `AUTHENTICATION_FAILED`, even if it also mentions a limit;
+4. stderr text that mentions a limit: `RATE_LIMITED`.
+
+Any mention of a rate limit (`rate limit`, `RateLimitError`, `too many
+requests`, …) counts. Usage, session, credit, and quota wording counts only in
+the forms the CLIs and providers use to say the limit was hit, so a
+context-window or turn limit is not reported as a rate limit.
 
 ## Declarative runtime profiles
 

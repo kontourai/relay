@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { detectUsageLimit, toolDescriptionLines } from "./harness-text.js";
+import { classifyAuthOrLimit, detectUsageLimit, toolDescriptionLines } from "./harness-text.js";
 import { createProcessRuntime, type ProcessInvocation, type ProcessInvocationOutput, type ProcessRuntimeCodec } from "./process.js";
 import { ModelInvocationError, type ModelInvocationOptions, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime, type ModelTool } from "./types.js";
 
@@ -143,7 +143,7 @@ export function createCodexCodec(model: string, schemaPath?: string): ProcessRun
       const text = [...events].reverse().find((event) =>
         event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string")?.item?.text;
       if (typeof text !== "string") {
-        throw rateLimited(output) ?? new ModelInvocationError("RUNTIME_FAILURE", "Codex omitted its final agent message", false);
+        throw authOrLimit(output) ?? new ModelInvocationError("RUNTIME_FAILURE", "Codex omitted its final agent message", false);
       }
       const forcedTool = resolveForcedTool(request);
       let structuredOutput: unknown;
@@ -220,10 +220,10 @@ function parseEvents(stdout: string): CodexEvent[] {
 
 /**
  * `codex exec --json` reports a usage limit or an exhausted 429 retry as
- * `error` and `turn.failed` events on stdout. Only those events and stderr are
- * inspected, never an agent message.
+ * `error` and `turn.failed` events on stdout. Those events are the structured
+ * evidence; an agent message is never inspected.
  */
-function rateLimited(output: ProcessInvocationOutput): ModelInvocationError | undefined {
+function authOrLimit(output: ProcessInvocationOutput): ModelInvocationError | undefined {
   const errorTexts: string[] = [];
   for (const line of output.stdout.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -237,22 +237,13 @@ function rateLimited(output: ProcessInvocationOutput): ModelInvocationError | un
     if (event.type === "error" && typeof event.message === "string") errorTexts.push(event.message);
     if (event.type === "turn.failed" && typeof event.error?.message === "string") errorTexts.push(event.error.message);
   }
-  const reason = detectUsageLimit([...errorTexts, output.stderr]);
-  // Retryable, as RATE_LIMITED is from the API adapters: a router uses the flag
-  // to decide whether it may try again or move to its next candidate.
-  return reason ? new ModelInvocationError("RATE_LIMITED", `Codex rate limited: ${reason}`, true) : undefined;
+  return classifyAuthOrLimit("Codex", { structuredLimit: detectUsageLimit(errorTexts), stderr: output.stderr });
 }
 
 function classifyCodexFailure(output: ProcessInvocationOutput): ModelInvocationError {
-  const stderr = output.stderr.toLowerCase();
-  // Authentication is checked first: a failed login whose output also mentions
-  // a limit is still an authentication failure.
-  if (/auth|login|credential|api key/.test(stderr)) {
-    return new ModelInvocationError("AUTHENTICATION_FAILED", "Codex authentication failed", false);
-  }
-  const limited = rateLimited(output);
-  if (limited) return limited;
-  if (/overloaded|unavailable|temporarily/.test(stderr)) {
+  const classified = authOrLimit(output);
+  if (classified) return classified;
+  if (/overloaded|unavailable|temporarily/.test(output.stderr.toLowerCase())) {
     return new ModelInvocationError("PROVIDER_UNAVAILABLE", "Codex runtime is unavailable", true);
   }
   return new ModelInvocationError("RUNTIME_FAILURE", `Codex failed with exit code ${output.exitCode}`, false);

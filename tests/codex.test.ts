@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { detectUsageLimit } from "../src/harness-text.js";
+import { incidentalAuthStderr, priorRateLimitStderr } from "./stderr-fixtures.js";
 import { createCodexCodec, createCodexRuntime } from "../src/codex.js";
 import { ModelInvocationError, type ModelInvocationRequest } from "../src/types.js";
 
@@ -254,7 +255,15 @@ test("Codex does not read a limit from an agent message or an unrelated failure"
   assert.deepEqual([error?.code, error?.message], ["RUNTIME_FAILURE", "Codex failed with exit code 1"]);
 });
 
-test("Codex reports an authentication failure even when the output also mentions a limit", () => {
+test("Codex keeps classifying every stderr rate-limit line it classified before", () => {
+  const codec = createCodexCodec("gpt-5", "/tmp/schema.json");
+  for (const stderr of priorRateLimitStderr) {
+    const error = codec.classifyFailure?.({ stdout: "", stderr, exitCode: 1, latencyMs: 1 }, request);
+    assert.deepEqual([error?.code, error?.message, error?.retryable], ["RATE_LIMITED", "Codex rate limited: rate limit reached", true], stderr);
+  }
+});
+
+test("Codex reports an authentication failure when stderr also mentions a limit", () => {
   const codec = createCodexCodec("gpt-5", "/tmp/schema.json");
   // The last line really does match a limit, so this fails if the limit check runs first.
   const both = "Authentication failed: invalid api key. usage limit reached, try again at 9:05 PM.";
@@ -266,8 +275,26 @@ test("Codex reports an authentication failure even when the output also mentions
   ]) {
     const error = codec.classifyFailure?.({ stdout: "", stderr, exitCode: 1, latencyMs: 1 }, request);
     assert.deepEqual([error?.code, error?.retryable], ["AUTHENTICATION_FAILED", false], stderr);
+    // A failed run that exits zero is classified the same way.
+    assert.throws(() => codec.parse({ stdout: JSON.stringify({ type: "turn.started" }), stderr, exitCode: 0, latencyMs: 1 }, request), (thrown: unknown) =>
+      thrown instanceof ModelInvocationError && thrown.code === "AUTHENTICATION_FAILED", stderr);
   }
-  // A limit reported on stdout does not outrank an authentication failure on stderr.
-  const mixed = codec.classifyFailure?.({ stdout: limitStdout, stderr: "Error: not logged in. Run login.", exitCode: 1, latencyMs: 1 }, request);
-  assert.equal(mixed?.code, "AUTHENTICATION_FAILED");
+});
+
+test("Codex trusts its structured limit report over auth-looking stderr noise", () => {
+  const codec = createCodexCodec("gpt-5", "/tmp/schema.json");
+  for (const stderr of [...incidentalAuthStderr, "Error: not logged in. Run login."]) {
+    const error = codec.classifyFailure?.({ stdout: limitStdout, stderr, exitCode: 1, latencyMs: 1 }, request);
+    assert.deepEqual([error?.code, error?.message, error?.retryable], ["RATE_LIMITED", "Codex rate limited: usage limit reached; resets Oct 4th, 2026 9:00 AM", true], stderr);
+    assert.throws(() => codec.parse({ stdout: limitStdout, stderr, exitCode: 0, latencyMs: 1 }, request), (thrown: unknown) =>
+      thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && thrown.retryable, stderr);
+  }
+});
+
+test("Codex reads a limit from an error event alone and from a failed turn alone", () => {
+  const codec = createCodexCodec("gpt-5", "/tmp/schema.json");
+  for (const event of [{ type: "error", message: limitMessage }, { type: "turn.failed", error: { message: limitMessage } }]) {
+    const error = codec.classifyFailure?.({ stdout: JSON.stringify(event), stderr: "", exitCode: 1, latencyMs: 1 }, request);
+    assert.deepEqual([error?.code, error?.message], ["RATE_LIMITED", "Codex rate limited: usage limit reached; resets Oct 4th, 2026 9:00 AM"], event.type);
+  }
 });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { detectUsageLimit } from "../src/harness-text.js";
+import { incidentalAuthStderr, priorRateLimitStderr } from "./stderr-fixtures.js";
 import { createClaudeCodeCodec } from "../src/claude-code.js";
 import { ModelInvocationError, type ModelInvocationRequest } from "../src/types.js";
 
@@ -169,7 +170,15 @@ test("Claude Code does not read a limit from a successful response or an unrelat
   assert.deepEqual([other?.code, other?.message], ["RUNTIME_FAILURE", "Claude Code failed with exit code 1"]);
 });
 
-test("Claude Code reports an authentication failure even when the output also mentions a limit", () => {
+test("Claude Code keeps classifying every stderr rate-limit line it classified before", () => {
+  const codec = createClaudeCodeCodec("sonnet");
+  for (const stderr of priorRateLimitStderr) {
+    const error = codec.classifyFailure?.({ stdout: "", stderr, exitCode: 1, latencyMs: 1 }, request);
+    assert.deepEqual([error?.code, error?.message, error?.retryable], ["RATE_LIMITED", "Claude Code rate limited: rate limit reached", true], stderr);
+  }
+});
+
+test("Claude Code reports an authentication failure when stderr also mentions a limit", () => {
   const codec = createClaudeCodeCodec("sonnet");
   // The last line really does match a limit, so this fails if the limit check runs first.
   const both = "Authentication failed: invalid api key. usage limit reached, try again at 9:05 PM.";
@@ -181,10 +190,20 @@ test("Claude Code reports an authentication failure even when the output also me
   ]) {
     const error = codec.classifyFailure?.({ stdout: "", stderr, exitCode: 1, latencyMs: 1 }, request);
     assert.deepEqual([error?.code, error?.retryable], ["AUTHENTICATION_FAILED", false], stderr);
+    // A failed run that exits zero is classified the same way.
+    assert.throws(() => codec.parse({ stdout: JSON.stringify({ is_error: true, result: "failed" }), stderr, exitCode: 0, latencyMs: 1 }, request), (thrown: unknown) =>
+      thrown instanceof ModelInvocationError && thrown.code === "AUTHENTICATION_FAILED", stderr);
   }
-  // A limit reported on stdout does not outrank an authentication failure on stderr.
-  const mixed = codec.classifyFailure?.({ stdout: limitStdout, stderr: "Error: not logged in. Run login.", exitCode: 1, latencyMs: 1 }, request);
-  assert.equal(mixed?.code, "AUTHENTICATION_FAILED");
+});
+
+test("Claude Code trusts its structured limit report over auth-looking stderr noise", () => {
+  const codec = createClaudeCodeCodec("sonnet");
+  for (const stderr of [...incidentalAuthStderr, "Error: not logged in. Run login."]) {
+    const error = codec.classifyFailure?.({ stdout: limitStdout, stderr, exitCode: 1, latencyMs: 1 }, request);
+    assert.deepEqual([error?.code, error?.message, error?.retryable], ["RATE_LIMITED", "Claude Code rate limited: session limit reached; resets 5pm", true], stderr);
+    assert.throws(() => codec.parse({ stdout: limitStdout, stderr, exitCode: 0, latencyMs: 1 }, request), (thrown: unknown) =>
+      thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && thrown.retryable, stderr);
+  }
 });
 
 test("Claude Code reads a limit from stderr when the run printed no result", () => {
@@ -193,4 +212,15 @@ test("Claude Code reads a limit from stderr when the run printed no result", () 
   }, request);
   assert.deepEqual([error?.code, error?.message, error?.retryable],
     ["RATE_LIMITED", "Claude Code rate limited: weekly limit reached; resets Oct 4", true]);
+});
+
+test("Claude Code treats an error result with an authentication status as an authentication failure", () => {
+  const codec = createClaudeCodeCodec("sonnet");
+  for (const status of [401, 403]) {
+    const stdout = JSON.stringify({ is_error: true, api_error_status: status, result: "Invalid API key · usage limit reached, try again at 9:05 PM" });
+    const error = codec.classifyFailure?.({ stdout, stderr: "", exitCode: 1, latencyMs: 1 }, request);
+    assert.deepEqual([error?.code, error?.retryable], ["AUTHENTICATION_FAILED", false], String(status));
+    assert.throws(() => codec.parse({ stdout, stderr: "", exitCode: 0, latencyMs: 1 }, request), (thrown: unknown) =>
+      thrown instanceof ModelInvocationError && thrown.code === "AUTHENTICATION_FAILED", String(status));
+  }
 });

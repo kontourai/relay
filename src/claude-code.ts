@@ -1,5 +1,5 @@
 import { ModelInvocationError, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime, type ModelTool } from "./types.js";
-import { detectUsageLimit, toolDescriptionLines } from "./harness-text.js";
+import { classifyAuthOrLimit, detectUsageLimit, toolDescriptionLines } from "./harness-text.js";
 import { createProcessRuntime, type ProcessInvocation, type ProcessInvocationOutput, type ProcessRuntimeCodec } from "./process.js";
 
 export interface ClaudeCodeRuntimeOptions {
@@ -65,7 +65,7 @@ export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
     parse(output, request): ModelInvocationResult {
       const parsed = parseJsonResult(output.stdout);
       if (parsed.is_error === true) {
-        throw rateLimited(output)
+        throw authOrLimit(output)
           ?? new ModelInvocationError("RUNTIME_FAILURE", "Claude Code reported an invocation error", false);
       }
       const forcedTool = resolveForcedTool(request);
@@ -156,9 +156,11 @@ function parseJsonResult(stdout: string): ClaudeCodeJsonResult {
 /**
  * The CLI reports a usage limit as an error result on stdout (`is_error`, the
  * limit message in `result`, `api_error_status` 429) with an empty stderr. That
- * error text and stderr are inspected, never a successful model response.
+ * error result is the structured evidence; a successful model response is
+ * never inspected. An error result with status 401 or 403 is an authentication
+ * failure whatever its text says.
  */
-function rateLimited(output: ProcessInvocationOutput): ModelInvocationError | undefined {
+function authOrLimit(output: ProcessInvocationOutput): ModelInvocationError | undefined {
   let result: ClaudeCodeJsonResult = {};
   try {
     const parsed = JSON.parse(output.stdout) as unknown;
@@ -166,24 +168,20 @@ function rateLimited(output: ProcessInvocationOutput): ModelInvocationError | un
   } catch {
     // A failed run may print no JSON at all; stderr is still inspected.
   }
-  const errorText = result.is_error === true && typeof result.result === "string" ? result.result : "";
-  const reason = detectUsageLimit([errorText, output.stderr])
-    ?? (result.is_error === true && result.api_error_status === 429 ? "rate limit reached" : undefined);
-  // Retryable, as RATE_LIMITED is from the API adapters: a router uses the flag
-  // to decide whether it may try again or move to its next candidate.
-  return reason ? new ModelInvocationError("RATE_LIMITED", `Claude Code rate limited: ${reason}`, true) : undefined;
+  const failed = result.is_error === true;
+  const status = failed ? result.api_error_status : undefined;
+  return classifyAuthOrLimit("Claude Code", {
+    structuredAuth: status === 401 || status === 403,
+    structuredLimit: detectUsageLimit([failed && typeof result.result === "string" ? result.result : ""])
+      ?? (status === 429 ? "rate limit reached" : undefined),
+    stderr: output.stderr,
+  });
 }
 
 function classifyClaudeCodeFailure(output: ProcessInvocationOutput): ModelInvocationError {
-  const stderr = output.stderr.toLowerCase();
-  // Authentication is checked first: a failed login whose output also mentions
-  // a limit is still an authentication failure.
-  if (/auth|login|credential|api key/.test(stderr)) {
-    return new ModelInvocationError("AUTHENTICATION_FAILED", "Claude Code authentication failed", false);
-  }
-  const limited = rateLimited(output);
-  if (limited) return limited;
-  if (/overloaded|unavailable|temporarily/.test(stderr)) {
+  const classified = authOrLimit(output);
+  if (classified) return classified;
+  if (/overloaded|unavailable|temporarily/.test(output.stderr.toLowerCase())) {
     return new ModelInvocationError("PROVIDER_UNAVAILABLE", "Claude Code runtime is unavailable", true);
   }
   return new ModelInvocationError("RUNTIME_FAILURE", `Claude Code failed with exit code ${output.exitCode}`, false);
