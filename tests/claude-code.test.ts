@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { detectUsageLimit } from "../src/harness-text.js";
 import { createClaudeCodeCodec } from "../src/claude-code.js";
 import { ModelInvocationError, type ModelInvocationRequest } from "../src/types.js";
 
@@ -141,18 +142,18 @@ const limitStdout = JSON.stringify({
   result: "You've hit your session limit · resets 5pm (America/Denver)", modelUsage: {}, total_cost_usd: 0,
 });
 
-test("Claude Code classifies its usage-limit result as a non-retryable rate limit with a reason", () => {
+test("Claude Code classifies its usage-limit result as a retryable rate limit with a reason", () => {
   const codec = createClaudeCodeCodec("sonnet");
   const error = codec.classifyFailure?.({ stdout: limitStdout, stderr: "", exitCode: 1, latencyMs: 1 }, request);
-  assert.deepEqual([error?.code, error?.message, error?.retryable], ["RATE_LIMITED", "Claude Code rate limited: session limit reached; resets 5pm", false]);
+  assert.deepEqual([error?.code, error?.message, error?.retryable], ["RATE_LIMITED", "Claude Code rate limited: session limit reached; resets 5pm", true]);
   // The same result with a zero exit code must not read as a generic failure either.
   assert.throws(() => codec.parse({ stdout: limitStdout, stderr: "", exitCode: 0, latencyMs: 1 }, request), (thrown: unknown) =>
-    thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && !thrown.retryable);
+    thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && thrown.retryable);
   const statusOnly = codec.classifyFailure?.({
     stdout: JSON.stringify({ is_error: true, api_error_status: 429, result: "API Error: /Users/someone/private sk-live-PRIVATE" }),
     stderr: "", exitCode: 1, latencyMs: 1,
   }, request);
-  assert.deepEqual([statusOnly?.code, statusOnly?.message, statusOnly?.retryable], ["RATE_LIMITED", "Claude Code rate limited: rate limit reached", false]);
+  assert.deepEqual([statusOnly?.code, statusOnly?.message, statusOnly?.retryable], ["RATE_LIMITED", "Claude Code rate limited: rate limit reached", true]);
 });
 
 test("Claude Code does not read a limit from a successful response or an unrelated failure", () => {
@@ -166,4 +167,30 @@ test("Claude Code does not read a limit from a successful response or an unrelat
     stdout: JSON.stringify({ result: "You've hit your weekly limit", is_error: false }), stderr: "boom", exitCode: 1, latencyMs: 1,
   }, plain);
   assert.deepEqual([other?.code, other?.message], ["RUNTIME_FAILURE", "Claude Code failed with exit code 1"]);
+});
+
+test("Claude Code reports an authentication failure even when the output also mentions a limit", () => {
+  const codec = createClaudeCodeCodec("sonnet");
+  // The last line really does match a limit, so this fails if the limit check runs first.
+  const both = "Authentication failed: invalid api key. usage limit reached, try again at 9:05 PM.";
+  assert.equal(detectUsageLimit([both]), "usage limit reached; resets 9:05 PM");
+  for (const stderr of [
+    "Error: not logged in. Run login. (See rate limits at https://example.test/limits)",
+    "401 Unauthorized: invalid api key. usage limit info unavailable",
+    both,
+  ]) {
+    const error = codec.classifyFailure?.({ stdout: "", stderr, exitCode: 1, latencyMs: 1 }, request);
+    assert.deepEqual([error?.code, error?.retryable], ["AUTHENTICATION_FAILED", false], stderr);
+  }
+  // A limit reported on stdout does not outrank an authentication failure on stderr.
+  const mixed = codec.classifyFailure?.({ stdout: limitStdout, stderr: "Error: not logged in. Run login.", exitCode: 1, latencyMs: 1 }, request);
+  assert.equal(mixed?.code, "AUTHENTICATION_FAILED");
+});
+
+test("Claude Code reads a limit from stderr when the run printed no result", () => {
+  const error = createClaudeCodeCodec("sonnet").classifyFailure?.({
+    stdout: "", stderr: "You've hit your weekly limit · resets Oct 4", exitCode: 1, latencyMs: 1,
+  }, request);
+  assert.deepEqual([error?.code, error?.message, error?.retryable],
+    ["RATE_LIMITED", "Claude Code rate limited: weekly limit reached; resets Oct 4", true]);
 });

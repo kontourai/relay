@@ -3,6 +3,7 @@ import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { detectUsageLimit } from "../src/harness-text.js";
 import { createCodexCodec, createCodexRuntime } from "../src/codex.js";
 import { ModelInvocationError, type ModelInvocationRequest } from "../src/types.js";
 
@@ -210,19 +211,19 @@ const limitStdout = [
   JSON.stringify({ type: "turn.failed", error: { message: limitMessage } }),
 ].join("\n");
 
-test("Codex classifies a usage-limit turn as a non-retryable rate limit with a reason", async () => {
+test("Codex classifies a usage-limit turn as a retryable rate limit with a reason", async () => {
   const codec = createCodexCodec("gpt-5", "/tmp/schema.json");
   const error = codec.classifyFailure?.({ stdout: limitStdout, stderr: "", exitCode: 1, latencyMs: 1 }, request);
   assert.deepEqual([error?.code, error?.message, error?.retryable],
-    ["RATE_LIMITED", "Codex rate limited: usage limit reached; resets Oct 4th, 2026 9:00 AM", false]);
+    ["RATE_LIMITED", "Codex rate limited: usage limit reached; resets Oct 4th, 2026 9:00 AM", true]);
   const retries = codec.classifyFailure?.({
     stdout: JSON.stringify({ type: "turn.failed", error: { message: "exceeded retry limit, last status: 429 Too Many Requests" } }),
     stderr: "", exitCode: 1, latencyMs: 1,
   }, request);
-  assert.deepEqual([retries?.code, retries?.message, retries?.retryable], ["RATE_LIMITED", "Codex rate limited: rate limit reached", false]);
+  assert.deepEqual([retries?.code, retries?.message, retries?.retryable], ["RATE_LIMITED", "Codex rate limited: rate limit reached", true]);
   // A failed turn reported with a zero exit code must not read as a missing message.
   assert.throws(() => codec.parse({ stdout: limitStdout, stderr: "", exitCode: 0, latencyMs: 1 }, request), (thrown: unknown) =>
-    thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && !thrown.retryable);
+    thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && thrown.retryable);
 
   // Through the runtime: a nonzero exit reaches the same classification.
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "relay-codex-limit-"));
@@ -234,7 +235,7 @@ process.exitCode = 1;
   await chmod(executable, 0o700);
   try {
     await assert.rejects(createCodexRuntime({ model: "fixture", executable }).invoke(request), (thrown: unknown) =>
-      thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && !thrown.retryable
+      thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && thrown.retryable
       && thrown.message === "Codex rate limited: usage limit reached; resets Oct 4th, 2026 9:00 AM");
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
@@ -251,4 +252,22 @@ test("Codex does not read a limit from an agent message or an unrelated failure"
     stderr: "", exitCode: 1, latencyMs: 1,
   }, request);
   assert.deepEqual([error?.code, error?.message], ["RUNTIME_FAILURE", "Codex failed with exit code 1"]);
+});
+
+test("Codex reports an authentication failure even when the output also mentions a limit", () => {
+  const codec = createCodexCodec("gpt-5", "/tmp/schema.json");
+  // The last line really does match a limit, so this fails if the limit check runs first.
+  const both = "Authentication failed: invalid api key. usage limit reached, try again at 9:05 PM.";
+  assert.equal(detectUsageLimit([both]), "usage limit reached; resets 9:05 PM");
+  for (const stderr of [
+    "Error: not logged in. Run login. (See rate limits at https://example.test/limits)",
+    "401 Unauthorized: invalid api key. usage limit info unavailable",
+    both,
+  ]) {
+    const error = codec.classifyFailure?.({ stdout: "", stderr, exitCode: 1, latencyMs: 1 }, request);
+    assert.deepEqual([error?.code, error?.retryable], ["AUTHENTICATION_FAILED", false], stderr);
+  }
+  // A limit reported on stdout does not outrank an authentication failure on stderr.
+  const mixed = codec.classifyFailure?.({ stdout: limitStdout, stderr: "Error: not logged in. Run login.", exitCode: 1, latencyMs: 1 }, request);
+  assert.equal(mixed?.code, "AUTHENTICATION_FAILED");
 });

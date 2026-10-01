@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { detectUsageLimit } from "../src/harness-text.js";
 import { createOpenCodeCodec, createOpenCodeRuntime } from "../src/opencode.js";
 import { ModelInvocationError, type ModelInvocationRequest } from "../src/types.js";
 
@@ -70,7 +71,7 @@ test("OpenCode prompted prompt carries the tool description and field descriptio
   ].join("\n\n"));
 });
 
-test("OpenCode classifies a usage-limit error event as a non-retryable rate limit with a reason", () => {
+test("OpenCode classifies a usage-limit error event as a retryable rate limit with a reason", () => {
   const codec = createOpenCodeCodec("zai/glm-5");
   const plain = { messages: request.messages };
   // Error-event shape as \`opencode run --format json\` prints it (exit code 1).
@@ -80,13 +81,31 @@ test("OpenCode classifies a usage-limit error event as a non-retryable rate limi
   });
   const error = codec.classifyFailure?.({ stdout, stderr: "", exitCode: 1, latencyMs: 1 }, plain);
   assert.deepEqual([error?.code, error?.message, error?.retryable],
-    ["RATE_LIMITED", "OpenCode rate limited: usage limit reached; resets in 2 days 3 hours", false]);
+    ["RATE_LIMITED", "OpenCode rate limited: usage limit reached; resets in 2 days 3 hours", true]);
   assert.throws(() => codec.parse({ stdout, stderr: "", exitCode: 0, latencyMs: 1 }, plain), (thrown: unknown) =>
-    thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && !thrown.retryable);
+    thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && thrown.retryable);
   const stderrOnly = codec.classifyFailure?.({ stdout: "", stderr: "Error: Too Many Requests", exitCode: 1, latencyMs: 1 }, plain);
-  assert.deepEqual([stderrOnly?.code, stderrOnly?.message, stderrOnly?.retryable], ["RATE_LIMITED", "OpenCode rate limited: rate limit reached", false]);
+  assert.deepEqual([stderrOnly?.code, stderrOnly?.message, stderrOnly?.retryable], ["RATE_LIMITED", "OpenCode rate limited: rate limit reached", true]);
   const text = codec.classifyFailure?.({
     stdout: JSON.stringify({ type: "text", part: { type: "text", text: "usage limit reached" } }), stderr: "", exitCode: 1, latencyMs: 1,
   }, plain);
   assert.deepEqual([text?.code, text?.message], ["RUNTIME_FAILURE", "OpenCode failed with exit code 1"]);
+});
+
+test("OpenCode reports an authentication failure even when the output also mentions a limit", () => {
+  const codec = createOpenCodeCodec("zai/glm-5");
+  // The last line really does match a limit, so this fails if the limit check runs first.
+  const both = "Authentication failed: invalid api key. usage limit reached, try again at 9:05 PM.";
+  assert.equal(detectUsageLimit([both]), "usage limit reached; resets 9:05 PM");
+  for (const stderr of [
+    "Error: not logged in. Run login. (See rate limits at https://example.test/limits)",
+    "401 Unauthorized: invalid api key. usage limit info unavailable",
+    both,
+  ]) {
+    const error = codec.classifyFailure?.({ stdout: "", stderr, exitCode: 1, latencyMs: 1 }, { messages: request.messages });
+    assert.deepEqual([error?.code, error?.retryable], ["AUTHENTICATION_FAILED", false], stderr);
+  }
+  // A limit reported on stdout does not outrank an authentication failure on stderr.
+  const mixed = codec.classifyFailure?.({ stdout: JSON.stringify({ type: "error", error: { name: "APIError", data: { message: "Go usage limit reached. It will reset in 2 days 3 hours." } } }), stderr: "Error: not logged in. Run login.", exitCode: 1, latencyMs: 1 }, { messages: request.messages });
+  assert.equal(mixed?.code, "AUTHENTICATION_FAILED");
 });

@@ -166,16 +166,24 @@ Codex, and malformed JSON remains a retryable typed failure.
 
 A harness CLI takes the selected tool's schema as an output constraint, not as
 a tool definition. All three profiles therefore put the tool `description` and
-each schema field `description` into the prompt, so instructions written there
-reach the model.
+the schema's field `description`s into the prompt, so instructions written there
+reach the model. Field descriptions are collected from the schema root,
+`properties`, a single-schema `items`, `anyOf`/`oneOf`/`allOf` branches, and
+`$defs`/`definitions`. A description under another keyword (`prefixItems`,
+tuple-form `items`, `additionalProperties`, `patternProperties`,
+`if`/`then`/`else`, `not`) is not added to the prompt; the CLI still receives
+it inside the schema.
 
 When a CLI reports that its own usage limit or rate limit was hit, the profile
-fails with `RATE_LIMITED` and `retryable: false`: the CLI has already retried,
-and a usage limit lasts until it resets, so a router should move to its next
-candidate. The message carries a short reason such as
-`Claude Code rate limited: weekly limit reached; resets Oct 4`. The reason is
-assembled from fixed phrases and a date, time, or duration matched by a strict
-pattern; the CLI's output is never copied into it.
+fails with `RATE_LIMITED` and `retryable: true`, the same code and flag the API
+adapters return for an HTTP 429. An authentication failure takes precedence
+over a limit mentioned in the same output. The message carries a short reason
+such as `Claude Code rate limited: weekly limit reached; resets Oct 4`. The
+reason is assembled from fixed phrases and a date, time, or duration matched by
+a strict pattern, read from the line that reported the limit; the CLI's output
+is never copied into it. Recognition is deliberately narrow: limit wording the
+profile does not know stays `RUNTIME_FAILURE`, and the reset time is available
+only as text in the message.
 
 ## Declarative runtime profiles
 

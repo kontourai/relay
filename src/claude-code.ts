@@ -155,8 +155,8 @@ function parseJsonResult(stdout: string): ClaudeCodeJsonResult {
 
 /**
  * The CLI reports a usage limit as an error result on stdout (`is_error`, the
- * limit message in `result`, `api_error_status` 429), not on stderr. Only that
- * error text is inspected, never a successful model response.
+ * limit message in `result`, `api_error_status` 429) with an empty stderr. That
+ * error text and stderr are inspected, never a successful model response.
  */
 function rateLimited(output: ProcessInvocationOutput): ModelInvocationError | undefined {
   let result: ClaudeCodeJsonResult = {};
@@ -169,18 +169,20 @@ function rateLimited(output: ProcessInvocationOutput): ModelInvocationError | un
   const errorText = result.is_error === true && typeof result.result === "string" ? result.result : "";
   const reason = detectUsageLimit([errorText, output.stderr])
     ?? (result.is_error === true && result.api_error_status === 429 ? "rate limit reached" : undefined);
-  // Not retryable on this runtime: the CLI already retried, and a usage limit
-  // lasts until its reset. A router can move to its next candidate.
-  return reason ? new ModelInvocationError("RATE_LIMITED", `Claude Code rate limited: ${reason}`, false) : undefined;
+  // Retryable, as RATE_LIMITED is from the API adapters: a router uses the flag
+  // to decide whether it may try again or move to its next candidate.
+  return reason ? new ModelInvocationError("RATE_LIMITED", `Claude Code rate limited: ${reason}`, true) : undefined;
 }
 
 function classifyClaudeCodeFailure(output: ProcessInvocationOutput): ModelInvocationError {
-  const limited = rateLimited(output);
-  if (limited) return limited;
   const stderr = output.stderr.toLowerCase();
+  // Authentication is checked first: a failed login whose output also mentions
+  // a limit is still an authentication failure.
   if (/auth|login|credential|api key/.test(stderr)) {
     return new ModelInvocationError("AUTHENTICATION_FAILED", "Claude Code authentication failed", false);
   }
+  const limited = rateLimited(output);
+  if (limited) return limited;
   if (/overloaded|unavailable|temporarily/.test(stderr)) {
     return new ModelInvocationError("PROVIDER_UNAVAILABLE", "Claude Code runtime is unavailable", true);
   }

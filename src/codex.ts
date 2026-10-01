@@ -238,18 +238,20 @@ function rateLimited(output: ProcessInvocationOutput): ModelInvocationError | un
     if (event.type === "turn.failed" && typeof event.error?.message === "string") errorTexts.push(event.error.message);
   }
   const reason = detectUsageLimit([...errorTexts, output.stderr]);
-  // Not retryable on this runtime: the CLI already retried, and a usage limit
-  // lasts until its reset. A router can move to its next candidate.
-  return reason ? new ModelInvocationError("RATE_LIMITED", `Codex rate limited: ${reason}`, false) : undefined;
+  // Retryable, as RATE_LIMITED is from the API adapters: a router uses the flag
+  // to decide whether it may try again or move to its next candidate.
+  return reason ? new ModelInvocationError("RATE_LIMITED", `Codex rate limited: ${reason}`, true) : undefined;
 }
 
 function classifyCodexFailure(output: ProcessInvocationOutput): ModelInvocationError {
-  const limited = rateLimited(output);
-  if (limited) return limited;
   const stderr = output.stderr.toLowerCase();
+  // Authentication is checked first: a failed login whose output also mentions
+  // a limit is still an authentication failure.
   if (/auth|login|credential|api key/.test(stderr)) {
     return new ModelInvocationError("AUTHENTICATION_FAILED", "Codex authentication failed", false);
   }
+  const limited = rateLimited(output);
+  if (limited) return limited;
   if (/overloaded|unavailable|temporarily/.test(stderr)) {
     return new ModelInvocationError("PROVIDER_UNAVAILABLE", "Codex runtime is unavailable", true);
   }

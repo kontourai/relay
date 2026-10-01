@@ -6,6 +6,13 @@ import type { ModelTool } from "./types.js";
  * as a tool definition, so text that a hosted SDK would send as the tool
  * description has to travel in the prompt. Returns nothing when the tool
  * declares no descriptions, leaving the prompt unchanged.
+ *
+ * Field descriptions are collected from the schema root, `properties`, a
+ * single-schema `items`, `anyOf`/`oneOf`/`allOf` branches, and
+ * `$defs`/`definitions`. Descriptions under other keywords (`prefixItems`,
+ * tuple-form `items`, `additionalProperties`, `patternProperties`,
+ * `if`/`then`/`else`, `not`) are not listed; they still reach the CLI inside
+ * the schema itself.
  */
 export function toolDescriptionLines(tool: ModelTool | undefined): string[] {
   if (!tool) return [];
@@ -62,15 +69,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // Bounds the text scanned, so a noisy stream cannot make classification slow.
 const maxScannedChars = 16 * 1024;
 
+// Deliberately narrow: a limit kind counts only inside the wording a CLI uses
+// to say the limit was hit. Unrecognised wording stays a RUNTIME_FAILURE, which
+// is the safe direction; a context-window or turn limit must never read as a
+// rate limit.
+const limitKind = "session|weekly|opus|sonnet|fast|monthly spend|monthly|usage credit|free usage|usage|rate";
+
 const namedLimits: ReadonlyArray<[RegExp, string]> = [
-  [/\b(session|weekly|opus|sonnet|fast|monthly spend|monthly|usage credit) limit\b/i, "$1 limit reached"],
+  [new RegExp(`\\b(?:hit|reached|exceeded) your (${limitKind}) limit\\b`, "i"), "$1 limit reached"],
+  [new RegExp(`\\b(${limitKind}) limit (?:reached|exceeded|hit)\\b`, "i"), "$1 limit reached"],
+  [/\bFreeUsageLimitError\b/, "free usage limit reached"],
+  [/\b(?:usage_limit_reached|usage_limit_exceeded|GoUsageLimitError)\b/, "usage limit reached"],
   [/\bout of (?:usage credits|extra usage)\b/i, "usage credits exhausted"],
   [/\bcredits? (?:are )?(?:depleted|exhausted)\b/i, "usage credits exhausted"],
-  [/\bfree (?:usage )?limit\b|FreeUsageLimitError/i, "free usage limit reached"],
-  [/\busage limit\b|\busage_limit_reached\b|GoUsageLimitError/i, "usage limit reached"],
   [/\b(?:insufficient_quota|quota (?:exceeded|exhausted)|exceeded your (?:current )?quota)\b/i, "quota exhausted"],
-  [/\b(?:hit|reached) your (?:[a-z0-9]{1,16} ){0,3}limit\b/i, "usage limit reached"],
-  [/\brate[ _-]?limit(?:ed|s|ing)?\b|\btoo many requests\b|\btoo_many_requests\b|\bstatus:? 429\b|\b429 too many\b/i, "rate limit reached"],
+  [/\brate[ -]limited\b|\brate_limit_(?:exceeded|error)\b|\b(?:hit|reached|exceeded) (?:a|the) rate limit\b|\btoo many requests\b|\btoo_many_requests\b/i, "rate limit reached"],
 ];
 
 const month = "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]{0,6}";
@@ -87,21 +100,23 @@ const resetIn = new RegExp(`\\b(?:resets?|try again|retry)(?: after)? in (${dura
  * a reason assembled only from fixed phrases and a date, clock time, or
  * duration matched by a strict grammar. Nothing else from the CLI's output is
  * copied, so paths, URLs, account names, and tokens cannot reach the reason.
+ * The reset time is read only from the line that reported the limit, after the
+ * limit wording, so an unrelated "try again in 5 seconds" is not attributed to it.
  */
 export function detectUsageLimit(texts: readonly string[]): string | undefined {
-  const text = texts.join("\n").slice(0, maxScannedChars);
-  let phrase: string | undefined;
-  for (const [pattern, template] of namedLimits) {
-    const match = pattern.exec(text);
-    if (!match) continue;
-    phrase = template.replace("$1", (match[1] ?? "").toLowerCase());
-    break;
+  const lines = texts.join("\n").slice(0, maxScannedChars).split(/\r?\n/);
+  for (const line of lines) {
+    for (const [pattern, template] of namedLimits) {
+      const match = pattern.exec(line);
+      if (!match) continue;
+      const phrase = template.replace("$1", (match[1] ?? "").toLowerCase());
+      const rest = line.slice(match.index);
+      const at = resetAt.exec(rest)?.[1];
+      const within = at ? undefined : resetIn.exec(rest)?.[1];
+      return `${phrase}${at ? `; resets ${tidy(at)}` : within ? `; resets in ${tidy(within)}` : ""}`;
+    }
   }
-  if (!phrase) return undefined;
-  const at = resetAt.exec(text)?.[1];
-  const within = at ? undefined : resetIn.exec(text)?.[1];
-  const reset = at ? `; resets ${tidy(at)}` : within ? `; resets in ${tidy(within)}` : "";
-  return `${phrase}${reset}`;
+  return undefined;
 }
 
 function tidy(value: string): string {

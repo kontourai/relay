@@ -195,16 +195,18 @@ function rateLimited(output: ProcessInvocationOutput): ModelInvocationError | un
     }
   }
   const reason = detectUsageLimit([...errorTexts, output.stderr]);
-  // Not retryable on this runtime: the CLI already retried, and a usage limit
-  // lasts until its reset. A router can move to its next candidate.
-  return reason ? new ModelInvocationError("RATE_LIMITED", `OpenCode rate limited: ${reason}`, false) : undefined;
+  // Retryable, as RATE_LIMITED is from the API adapters: a router uses the flag
+  // to decide whether it may try again or move to its next candidate.
+  return reason ? new ModelInvocationError("RATE_LIMITED", `OpenCode rate limited: ${reason}`, true) : undefined;
 }
 
 function classifyOpenCodeFailure(output: ProcessInvocationOutput): ModelInvocationError {
+  const stderr = output.stderr.toLowerCase();
+  // Authentication is checked first: a failed login whose output also mentions
+  // a limit is still an authentication failure.
+  if (/auth|login|credential|api key/.test(stderr)) return new ModelInvocationError("AUTHENTICATION_FAILED", "OpenCode authentication failed", false);
   const limited = rateLimited(output);
   if (limited) return limited;
-  const stderr = output.stderr.toLowerCase();
-  if (/auth|login|credential|api key/.test(stderr)) return new ModelInvocationError("AUTHENTICATION_FAILED", "OpenCode authentication failed", false);
   if (/overloaded|unavailable|temporarily/.test(stderr)) return new ModelInvocationError("PROVIDER_UNAVAILABLE", "OpenCode runtime is unavailable", true);
   return new ModelInvocationError("RUNTIME_FAILURE", `OpenCode failed with exit code ${output.exitCode}`, false);
 }
