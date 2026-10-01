@@ -220,6 +220,9 @@ test("Codex classifies a usage-limit turn as a non-retryable rate limit with a r
     stderr: "", exitCode: 1, latencyMs: 1,
   }, request);
   assert.deepEqual([retries?.code, retries?.message, retries?.retryable], ["RATE_LIMITED", "Codex rate limited: rate limit reached", false]);
+  // A failed turn reported with a zero exit code must not read as a missing message.
+  assert.throws(() => codec.parse({ stdout: limitStdout, stderr: "", exitCode: 0, latencyMs: 1 }, request), (thrown: unknown) =>
+    thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && !thrown.retryable);
 
   // Through the runtime: a nonzero exit reaches the same classification.
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "relay-codex-limit-"));
