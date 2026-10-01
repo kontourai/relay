@@ -253,6 +253,12 @@ test("Codex does not read a limit from an agent message or an unrelated failure"
     stderr: "", exitCode: 1, latencyMs: 1,
   }, request);
   assert.deepEqual([error?.code, error?.message], ["RUNTIME_FAILURE", "Codex failed with exit code 1"]);
+  // Only an error event's own message is a limit report; another event's message is not.
+  const other = codec.classifyFailure?.({
+    stdout: JSON.stringify({ type: "item.completed", message: "You've hit your usage limit" }),
+    stderr: "", exitCode: 1, latencyMs: 1,
+  }, request);
+  assert.deepEqual([other?.code, other?.message], ["RUNTIME_FAILURE", "Codex failed with exit code 1"]);
 });
 
 test("Codex keeps classifying every stderr rate-limit line it classified before", () => {

@@ -168,6 +168,13 @@ test("Claude Code does not read a limit from a successful response or an unrelat
     stdout: JSON.stringify({ result: "You've hit your weekly limit", is_error: false }), stderr: "boom", exitCode: 1, latencyMs: 1,
   }, plain);
   assert.deepEqual([other?.code, other?.message], ["RUNTIME_FAILURE", "Claude Code failed with exit code 1"]);
+  // A status on a result that is not an error says nothing about why the process exited.
+  for (const api_error_status of [401, 429]) {
+    const stale = codec.classifyFailure?.({
+      stdout: JSON.stringify({ result: "ok", is_error: false, api_error_status }), stderr: "boom", exitCode: 1, latencyMs: 1,
+    }, plain);
+    assert.deepEqual([stale?.code, stale?.message], ["RUNTIME_FAILURE", "Claude Code failed with exit code 1"]);
+  }
 });
 
 test("Claude Code keeps classifying every stderr rate-limit line it classified before", () => {
