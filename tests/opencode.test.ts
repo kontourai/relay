@@ -52,3 +52,41 @@ test("OpenCode prompted mode marks malformed model JSON retryable", () => {
     latencyMs: 1,
   }, request), (error: unknown) => error instanceof ModelInvocationError && error.code === "RUNTIME_FAILURE" && error.retryable);
 });
+
+test("OpenCode prompted prompt carries the tool description and field descriptions", () => {
+  const schema = { type: "object", properties: { openings: { type: "number", description: "Seats still open." } }, required: ["openings"] };
+  const invocation = createOpenCodeCodec("zai/glm-5", "prompted").prepare({
+    messages: request.messages,
+    tools: [{ name: "submit", description: "Report openings exactly as written.", inputSchema: schema }],
+    toolChoice: { type: "tool", name: "submit" },
+  });
+  assert.equal(invocation.stdin, [
+    "Process the following provider-neutral conversation. Preserve the roles and return only the requested response.",
+    "Return only JSON matching this schema for the submit result. Do not use a Markdown fence.",
+    "{\"type\":\"object\",\"properties\":{\"openings\":{\"type\":\"number\",\"description\":\"Seats still open.\"}},\"required\":[\"openings\"]}",
+    "Description of the submit result:\nReport openings exactly as written.",
+    "Field descriptions for the submit result:\n- openings: Seats still open.",
+    "{\"messages\":[{\"role\":\"user\",\"content\":\"Camp Alpha has 40 openings.\"}]}",
+  ].join("\n\n"));
+});
+
+test("OpenCode classifies a usage-limit error event as a non-retryable rate limit with a reason", () => {
+  const codec = createOpenCodeCodec("zai/glm-5");
+  const plain = { messages: request.messages };
+  // Error-event shape as \`opencode run --format json\` prints it (exit code 1).
+  const stdout = JSON.stringify({
+    type: "error", timestamp: 1, sessionID: "ses_fixture",
+    error: { name: "APIError", data: { message: "Go usage limit reached. It will reset in 2 days 3 hours. To continue using this model now, enable usage from your available balance - https://opencode.ai/workspace/wrk_fixture/go" } },
+  });
+  const error = codec.classifyFailure?.({ stdout, stderr: "", exitCode: 1, latencyMs: 1 }, plain);
+  assert.deepEqual([error?.code, error?.message, error?.retryable],
+    ["RATE_LIMITED", "OpenCode rate limited: usage limit reached; resets in 2 days 3 hours", false]);
+  assert.throws(() => codec.parse({ stdout, stderr: "", exitCode: 0, latencyMs: 1 }, plain), (thrown: unknown) =>
+    thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && !thrown.retryable);
+  const stderrOnly = codec.classifyFailure?.({ stdout: "", stderr: "Error: Too Many Requests", exitCode: 1, latencyMs: 1 }, plain);
+  assert.deepEqual([stderrOnly?.code, stderrOnly?.message, stderrOnly?.retryable], ["RATE_LIMITED", "OpenCode rate limited: rate limit reached", false]);
+  const text = codec.classifyFailure?.({
+    stdout: JSON.stringify({ type: "text", part: { type: "text", text: "usage limit reached" } }), stderr: "", exitCode: 1, latencyMs: 1,
+  }, plain);
+  assert.deepEqual([text?.code, text?.message], ["RUNTIME_FAILURE", "OpenCode failed with exit code 1"]);
+});

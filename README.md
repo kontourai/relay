@@ -162,6 +162,21 @@ request, and attaches a warning to successful results. It is intentionally not
 presented as equivalent to the native schema enforcement in Claude Code or
 Codex, and malformed JSON remains a retryable typed failure.
 
+### Descriptions and usage limits in harness profiles
+
+A harness CLI takes the selected tool's schema as an output constraint, not as
+a tool definition. All three profiles therefore put the tool `description` and
+each schema field `description` into the prompt, so instructions written there
+reach the model.
+
+When a CLI reports that its own usage limit or rate limit was hit, the profile
+fails with `RATE_LIMITED` and `retryable: false`: the CLI has already retried,
+and a usage limit lasts until it resets, so a router should move to its next
+candidate. The message carries a short reason such as
+`Claude Code rate limited: weekly limit reached; resets Oct 4`. The reason is
+assembled from fixed phrases and a date, time, or duration matched by a strict
+pattern; the CLI's output is never copied into it.
+
 ## Declarative runtime profiles
 
 Applications can share one `PROFILE:MODEL` definition without copying adapter

@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { detectUsageLimit, toolDescriptionLines } from "./harness-text.js";
 import { createProcessRuntime, type ProcessInvocation, type ProcessInvocationOutput, type ProcessRuntimeCodec } from "./process.js";
 import { ModelInvocationError, type ModelInvocationOptions, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime } from "./types.js";
 
@@ -17,6 +18,7 @@ export interface OpenCodeRuntimeOptions {
 
 interface OpenCodeEvent {
   type?: unknown;
+  error?: { name?: unknown; message?: unknown; data?: { message?: unknown; responseBody?: unknown } };
   part?: {
     type?: unknown;
     text?: unknown;
@@ -84,7 +86,7 @@ export function createOpenCodeCodec(model: string, structuredOutput: "reject" | 
         .filter((event) => event.type === "text" && typeof event.part?.text === "string")
         .map((event) => event.part!.text as string)
         .join("");
-      if (!text) throw new ModelInvocationError("RUNTIME_FAILURE", "OpenCode omitted response text", false);
+      if (!text) throw rateLimited(output) ?? new ModelInvocationError("RUNTIME_FAILURE", "OpenCode omitted response text", false);
       const forcedTool = forcedToolFor(request);
       let structured: unknown;
       if (forcedTool) {
@@ -154,6 +156,7 @@ function serializeMessages(request: ModelInvocationRequest, mode: "reject" | "pr
       `Return only JSON matching this schema for the ${forcedTool.name} result. Do not use a Markdown fence.`,
       JSON.stringify(forcedTool.inputSchema),
     ] : []),
+    ...toolDescriptionLines(forcedTool),
     JSON.stringify({ messages: request.messages }),
   ].join("\n\n");
 }
@@ -172,10 +175,36 @@ function stripCodeFence(text: string): string {
   return match?.[1] ?? trimmed;
 }
 
+/**
+ * `opencode run --format json` reports a provider failure as an `error` event
+ * on stdout. Only those events and stderr are inspected, never response text.
+ */
+function rateLimited(output: ProcessInvocationOutput): ModelInvocationError | undefined {
+  const errorTexts: string[] = [];
+  for (const line of output.stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event: OpenCodeEvent;
+    try {
+      event = JSON.parse(line) as OpenCodeEvent;
+    } catch {
+      continue;
+    }
+    if (typeof event !== "object" || event === null || event.type !== "error") continue;
+    for (const value of [event.error?.name, event.error?.message, event.error?.data?.message, event.error?.data?.responseBody]) {
+      if (typeof value === "string") errorTexts.push(value);
+    }
+  }
+  const reason = detectUsageLimit([...errorTexts, output.stderr]);
+  // Not retryable on this runtime: the CLI already retried, and a usage limit
+  // lasts until its reset. A router can move to its next candidate.
+  return reason ? new ModelInvocationError("RATE_LIMITED", `OpenCode rate limited: ${reason}`, false) : undefined;
+}
+
 function classifyOpenCodeFailure(output: ProcessInvocationOutput): ModelInvocationError {
+  const limited = rateLimited(output);
+  if (limited) return limited;
   const stderr = output.stderr.toLowerCase();
   if (/auth|login|credential|api key/.test(stderr)) return new ModelInvocationError("AUTHENTICATION_FAILED", "OpenCode authentication failed", false);
-  if (/rate.?limit|too many requests/.test(stderr)) return new ModelInvocationError("RATE_LIMITED", "OpenCode rate limit reached", true);
   if (/overloaded|unavailable|temporarily/.test(stderr)) return new ModelInvocationError("PROVIDER_UNAVAILABLE", "OpenCode runtime is unavailable", true);
   return new ModelInvocationError("RUNTIME_FAILURE", `OpenCode failed with exit code ${output.exitCode}`, false);
 }

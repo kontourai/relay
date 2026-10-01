@@ -1,8 +1,9 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { detectUsageLimit, toolDescriptionLines } from "./harness-text.js";
 import { createProcessRuntime, type ProcessInvocation, type ProcessInvocationOutput, type ProcessRuntimeCodec } from "./process.js";
-import { ModelInvocationError, type ModelInvocationOptions, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime } from "./types.js";
+import { ModelInvocationError, type ModelInvocationOptions, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime, type ModelTool } from "./types.js";
 
 export interface CodexRuntimeOptions {
   model: string;
@@ -16,6 +17,8 @@ interface CodexEvent {
   type?: unknown;
   item?: { type?: unknown; text?: unknown };
   usage?: { input_tokens?: unknown; output_tokens?: unknown };
+  message?: unknown;
+  error?: { message?: unknown };
 }
 
 export function createCodexRuntime(options: CodexRuntimeOptions): ModelRuntime {
@@ -133,14 +136,14 @@ export function createCodexCodec(model: string, schemaPath?: string): ProcessRun
       ];
       if (schemaPath) args.push("--output-schema", schemaPath);
       args.push("-");
-      return { args, stdin: serializeMessages(request) };
+      return { args, stdin: serializeMessages(request, forcedTool) };
     },
     parse(output, request): ModelInvocationResult {
       const events = parseEvents(output.stdout);
       const text = [...events].reverse().find((event) =>
         event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string")?.item?.text;
       if (typeof text !== "string") {
-        throw new ModelInvocationError("RUNTIME_FAILURE", "Codex omitted its final agent message", false);
+        throw rateLimited(output) ?? new ModelInvocationError("RUNTIME_FAILURE", "Codex omitted its final agent message", false);
       }
       const forcedTool = resolveForcedTool(request);
       let structuredOutput: unknown;
@@ -199,9 +202,10 @@ function resolveForcedTool(request: ModelInvocationRequest) {
   return selected;
 }
 
-function serializeMessages(request: ModelInvocationRequest): string {
+function serializeMessages(request: ModelInvocationRequest, forcedTool: ModelTool | undefined): string {
   return [
     "Process the following provider-neutral conversation. Preserve the roles and return only the requested response.",
+    ...toolDescriptionLines(forcedTool),
     JSON.stringify({ messages: request.messages }),
   ].join("\n\n");
 }
@@ -214,13 +218,37 @@ function parseEvents(stdout: string): CodexEvent[] {
   }
 }
 
+/**
+ * `codex exec --json` reports a usage limit or an exhausted 429 retry as
+ * `error` and `turn.failed` events on stdout. Only those events and stderr are
+ * inspected, never an agent message.
+ */
+function rateLimited(output: ProcessInvocationOutput): ModelInvocationError | undefined {
+  const errorTexts: string[] = [];
+  for (const line of output.stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event: CodexEvent;
+    try {
+      event = JSON.parse(line) as CodexEvent;
+    } catch {
+      continue;
+    }
+    if (typeof event !== "object" || event === null) continue;
+    if (event.type === "error" && typeof event.message === "string") errorTexts.push(event.message);
+    if (event.type === "turn.failed" && typeof event.error?.message === "string") errorTexts.push(event.error.message);
+  }
+  const reason = detectUsageLimit([...errorTexts, output.stderr]);
+  // Not retryable on this runtime: the CLI already retried, and a usage limit
+  // lasts until its reset. A router can move to its next candidate.
+  return reason ? new ModelInvocationError("RATE_LIMITED", `Codex rate limited: ${reason}`, false) : undefined;
+}
+
 function classifyCodexFailure(output: ProcessInvocationOutput): ModelInvocationError {
+  const limited = rateLimited(output);
+  if (limited) return limited;
   const stderr = output.stderr.toLowerCase();
   if (/auth|login|credential|api key/.test(stderr)) {
     return new ModelInvocationError("AUTHENTICATION_FAILED", "Codex authentication failed", false);
-  }
-  if (/rate.?limit|too many requests/.test(stderr)) {
-    return new ModelInvocationError("RATE_LIMITED", "Codex rate limit reached", true);
   }
   if (/overloaded|unavailable|temporarily/.test(stderr)) {
     return new ModelInvocationError("PROVIDER_UNAVAILABLE", "Codex runtime is unavailable", true);

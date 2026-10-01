@@ -1,4 +1,5 @@
-import { ModelInvocationError, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime } from "./types.js";
+import { ModelInvocationError, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime, type ModelTool } from "./types.js";
+import { detectUsageLimit, toolDescriptionLines } from "./harness-text.js";
 import { createProcessRuntime, type ProcessInvocation, type ProcessInvocationOutput, type ProcessRuntimeCodec } from "./process.js";
 
 export interface ClaudeCodeRuntimeOptions {
@@ -23,6 +24,7 @@ interface ClaudeCodeJsonResult {
   modelUsage?: unknown;
   stop_reason?: unknown;
   is_error?: unknown;
+  api_error_status?: unknown;
 }
 
 export function createClaudeCodeRuntime(options: ClaudeCodeRuntimeOptions): ModelRuntime {
@@ -58,12 +60,13 @@ export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
         "--permission-mode", "dontAsk",
       ];
       if (forcedTool) args.push("--json-schema", JSON.stringify(forcedTool.inputSchema));
-      return { args, stdin: serializeMessages(request) };
+      return { args, stdin: serializeMessages(request, forcedTool) };
     },
     parse(output, request): ModelInvocationResult {
       const parsed = parseJsonResult(output.stdout);
       if (parsed.is_error === true) {
-        throw new ModelInvocationError("RUNTIME_FAILURE", "Claude Code reported an invocation error", false);
+        throw rateLimited(output)
+          ?? new ModelInvocationError("RUNTIME_FAILURE", "Claude Code reported an invocation error", false);
       }
       const forcedTool = resolveForcedTool(request);
       if (forcedTool && parsed.structured_output === undefined) {
@@ -128,13 +131,14 @@ function resolveForcedTool(request: ModelInvocationRequest) {
   return selected;
 }
 
-function serializeMessages(request: ModelInvocationRequest): string {
+function serializeMessages(request: ModelInvocationRequest, forcedTool: ModelTool | undefined): string {
   const messages = request.messages.map((message) => ({
     role: message.role,
     content: typeof message.content === "string" ? message.content : message.content,
   }));
   return [
     "Process the following provider-neutral conversation. Preserve the roles and return only the requested response.",
+    ...toolDescriptionLines(forcedTool),
     JSON.stringify({ messages }),
   ].join("\n\n");
 }
@@ -149,13 +153,33 @@ function parseJsonResult(stdout: string): ClaudeCodeJsonResult {
   }
 }
 
+/**
+ * The CLI reports a usage limit as an error result on stdout (`is_error`, the
+ * limit message in `result`, `api_error_status` 429), not on stderr. Only that
+ * error text is inspected, never a successful model response.
+ */
+function rateLimited(output: ProcessInvocationOutput): ModelInvocationError | undefined {
+  let result: ClaudeCodeJsonResult = {};
+  try {
+    const parsed = JSON.parse(output.stdout) as unknown;
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) result = parsed as ClaudeCodeJsonResult;
+  } catch {
+    // A failed run may print no JSON at all; stderr is still inspected.
+  }
+  const errorText = result.is_error === true && typeof result.result === "string" ? result.result : "";
+  const reason = detectUsageLimit([errorText, output.stderr])
+    ?? (result.is_error === true && result.api_error_status === 429 ? "rate limit reached" : undefined);
+  // Not retryable on this runtime: the CLI already retried, and a usage limit
+  // lasts until its reset. A router can move to its next candidate.
+  return reason ? new ModelInvocationError("RATE_LIMITED", `Claude Code rate limited: ${reason}`, false) : undefined;
+}
+
 function classifyClaudeCodeFailure(output: ProcessInvocationOutput): ModelInvocationError {
+  const limited = rateLimited(output);
+  if (limited) return limited;
   const stderr = output.stderr.toLowerCase();
   if (/auth|login|credential|api key/.test(stderr)) {
     return new ModelInvocationError("AUTHENTICATION_FAILED", "Claude Code authentication failed", false);
-  }
-  if (/rate.?limit|too many requests/.test(stderr)) {
-    return new ModelInvocationError("RATE_LIMITED", "Claude Code rate limit reached", true);
   }
   if (/overloaded|unavailable|temporarily/.test(stderr)) {
     return new ModelInvocationError("PROVIDER_UNAVAILABLE", "Claude Code runtime is unavailable", true);

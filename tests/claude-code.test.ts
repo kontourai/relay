@@ -109,3 +109,61 @@ test("Claude Code reports the served model only when modelUsage names exactly on
   const empty = parse({});
   assert.deepEqual([empty.model, empty.modelSource], ["haiku", "configured"]);
 });
+
+const describedRequest: ModelInvocationRequest = {
+  messages: [{ role: "user", content: "Camp Alpha has 40 openings." }],
+  tools: [{
+    name: "submit",
+    description: "Report openings exactly as written.",
+    inputSchema: { type: "object", properties: { openings: { type: "number", description: "Seats still open." } }, required: ["openings"] },
+  }],
+  toolChoice: { type: "tool", name: "submit" },
+};
+
+test("Claude Code prompt carries the tool description and field descriptions", () => {
+  const invocation = createClaudeCodeCodec("sonnet").prepare(describedRequest);
+  assert.equal(invocation.stdin, [
+    "Process the following provider-neutral conversation. Preserve the roles and return only the requested response.",
+    "Description of the submit result:\nReport openings exactly as written.",
+    "Field descriptions for the submit result:\n- openings: Seats still open.",
+    "{\"messages\":[{\"role\":\"user\",\"content\":\"Camp Alpha has 40 openings.\"}]}",
+  ].join("\n\n"));
+  assert.deepEqual(invocation.args, [
+    "--print", "--output-format", "json", "--model", "sonnet", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
+    "--json-schema", "{\"type\":\"object\",\"properties\":{\"openings\":{\"type\":\"number\",\"description\":\"Seats still open.\"}},\"required\":[\"openings\"]}",
+  ]);
+});
+
+// The stdout the CLI printed for a usage-limit run (exit code 1, empty stderr),
+// trimmed to the keys the profile reads.
+const limitStdout = JSON.stringify({
+  type: "result", subtype: "success", is_error: true, api_error_status: 429, terminal_reason: "api_error",
+  result: "You've hit your session limit · resets 5pm (America/Denver)", modelUsage: {}, total_cost_usd: 0,
+});
+
+test("Claude Code classifies its usage-limit result as a non-retryable rate limit with a reason", () => {
+  const codec = createClaudeCodeCodec("sonnet");
+  const error = codec.classifyFailure?.({ stdout: limitStdout, stderr: "", exitCode: 1, latencyMs: 1 }, request);
+  assert.deepEqual([error?.code, error?.message, error?.retryable], ["RATE_LIMITED", "Claude Code rate limited: session limit reached; resets 5pm", false]);
+  // The same result with a zero exit code must not read as a generic failure either.
+  assert.throws(() => codec.parse({ stdout: limitStdout, stderr: "", exitCode: 0, latencyMs: 1 }, request), (thrown: unknown) =>
+    thrown instanceof ModelInvocationError && thrown.code === "RATE_LIMITED" && !thrown.retryable);
+  const statusOnly = codec.classifyFailure?.({
+    stdout: JSON.stringify({ is_error: true, api_error_status: 429, result: "API Error: /Users/someone/private sk-live-PRIVATE" }),
+    stderr: "", exitCode: 1, latencyMs: 1,
+  }, request);
+  assert.deepEqual([statusOnly?.code, statusOnly?.message, statusOnly?.retryable], ["RATE_LIMITED", "Claude Code rate limited: rate limit reached", false]);
+});
+
+test("Claude Code does not read a limit from a successful response or an unrelated failure", () => {
+  const codec = createClaudeCodeCodec("sonnet");
+  const plain = { messages: [{ role: "user" as const, content: "x" }] };
+  const result = codec.parse({
+    stdout: JSON.stringify({ result: "You've hit your weekly limit", is_error: false }), stderr: "", exitCode: 0, latencyMs: 1,
+  }, plain);
+  assert.equal(result.outputText, "You've hit your weekly limit");
+  const other = codec.classifyFailure?.({
+    stdout: JSON.stringify({ result: "You've hit your weekly limit", is_error: false }), stderr: "boom", exitCode: 1, latencyMs: 1,
+  }, plain);
+  assert.deepEqual([other?.code, other?.message], ["RUNTIME_FAILURE", "Claude Code failed with exit code 1"]);
+});
