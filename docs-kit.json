@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "product": "relay",
+  "title": "Relay",
+  "tagline": "One provider-neutral way to invoke models across SDKs, frameworks, and harness CLIs",
+  "repo": "kontourai/relay",
+  "landing": "README.md",
+  "documents": [
+    { "source": "docs/getting-started.md", "section": "Start Here" },
+    { "source": "docs/concepts.md", "section": "Concepts" },
+    { "source": "CONTEXT.md", "section": "Concepts" },
+    { "source": "docs/reference.md", "section": "Reference" },
+    { "source": "AGENTS.md", "section": "Contribute" }
+  ],
+  "topics": [
+    { "id": "getting-started", "title": "Install Relay and run a first invocation", "source": "docs/getting-started.md" },
+    { "id": "boundaries", "title": "Where Relay fits among Bearing, Datum, Dispatch, and domain products", "source": "docs/concepts.md#where-relay-fits" },
+    { "id": "model-runtime", "title": "The ModelRuntime interface and the bundled runtimes", "source": "docs/concepts.md#model-runtime" },
+    { "id": "model-source", "title": "Model identity: provider-reported versus configured", "source": "docs/concepts.md#model-source" },
+    { "id": "capabilities", "title": "Capability declarations and structured-output and token-limit fidelity", "source": "docs/concepts.md#capabilities-and-fidelity" },
+    { "id": "structured-tools", "title": "Structured tools and tool choice across runtimes", "source": "docs/concepts.md#structured-tools" },
+    { "id": "failures", "title": "Failure codes, retryability, and how failures are classified", "source": "docs/concepts.md#failures-and-retryability" },
+    { "id": "harness-profiles", "title": "Process transport and harness profiles", "source": "docs/concepts.md#process-transport-and-harness-profiles" },
+    { "id": "record-replay", "title": "Recording and replaying invocations", "source": "docs/concepts.md#record-and-replay" },
+    { "id": "conformance", "title": "Runtime and physical-batch conformance checks", "source": "docs/reference.md#conformance-checks" },
+    { "id": "runtime-comparison", "title": "What each built-in runtime supports", "source": "docs/reference.md#runtime-comparison" },
+    { "id": "anthropic-runtime", "title": "Anthropic-compatible runtime options", "source": "docs/reference.md#anthropic-runtime" },
+    { "id": "ai-sdk-bridge", "title": "AI SDK v3 bridge in both directions", "source": "docs/reference.md#ai-sdk-bridge" },
+    { "id": "runtime-profiles", "title": "PROFILE:MODEL runtime profiles", "source": "docs/reference.md#runtime-profile-entrypoint" },
+    { "id": "troubleshooting", "title": "Troubleshooting common invocation errors", "source": "docs/reference.md#troubleshooting" }
+  ]
+}

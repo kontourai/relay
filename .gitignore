@@ -10,3 +10,4 @@ node_modules/
 .kontourai/veritas/repo-conformance/
 .kontourai/veritas/surface/
 .surface/runs/
+dist-pages/
