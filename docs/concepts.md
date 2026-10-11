@@ -102,7 +102,8 @@ replay record, or a conformance report.
 
 Which one each runtime reports:
 
-- The Anthropic-compatible runtime reports the response's `model`.
+- The Anthropic-compatible runtime reports the response's `model`, and the
+  configured model when the response carries none.
 - The AI SDK runtime reports `response.modelId` when the provider model
   supplies one, and the configured `modelId` otherwise.
 - The Claude Code runtime reports the served model when the CLI's `modelUsage`
@@ -175,8 +176,11 @@ warnings may differ. That is Relay's portability guarantee.
 
 ## Failures and retryability
 
-Every built-in runtime rejects with a `ModelInvocationError` carrying a `code`
-and a `retryable` flag:
+The built-in runtimes report invocation failures as a `ModelInvocationError`
+carrying a `code` and a `retryable` flag. One exception: a local filesystem
+error is not wrapped when the Codex runtime creates its temporary directory or
+writes its schema file, or when the OpenCode runtime, with no `cwd` set,
+creates its temporary directory.
 
 | Code | Meaning |
 | --- | --- |
@@ -185,7 +189,7 @@ and a `retryable` flag:
 | `INVALID_REQUEST` | The request cannot be expressed on this runtime, or the provider rejected it. |
 | `PROVIDER_UNAVAILABLE` | A transient provider, network, or executable-availability failure. |
 | `RATE_LIMITED` | A rate limit or usage limit was hit. |
-| `RUNTIME_FAILURE` | Anything else, including malformed output. |
+| `RUNTIME_FAILURE` | Anything else, including malformed output. Usually not retryable; OpenCode's unparseable prompted JSON is the retryable exception. |
 
 `retryable` is the signal a router uses to decide whether it may try again or
 move to its next candidate. Relay does not retry on its own.
@@ -253,7 +257,8 @@ The profiles are `claude-code`, `codex`, `opencode`, and `anthropic`.
 
 `createModelRuntimeProfile()` constructs exactly one runtime. It does not
 select providers, define fallback, or own budgets. Two choices stay explicit:
-OpenCode with structured tools requires `allowPromptedStructuredOutput`, and the
+the `opencode` profile always runs in prompted structured-output mode and
+refuses to construct without `allowPromptedStructuredOutput`, and the
 `anthropic` profile requires an `apiKey` option. The profile resolver never
 reads a credential itself.
 

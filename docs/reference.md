@@ -21,7 +21,7 @@ behaviour they share is explained in [Concepts](concepts.md).
 
 | Runtime | `id` | Text | Structured tools | Tool choice | `maxOutputTokens` | Model source |
 | --- | --- | --- | --- | --- | --- | --- |
-| Anthropic-compatible | `<provider>:<model>` | yes | native | `auto`, `required`, `tool` | sent as `max_tokens` | provider-reported |
+| Anthropic-compatible | `<provider>:<model>` | yes | native | `auto`, `required`, `tool` | sent as `max_tokens` | provider-reported when the response has a model |
 | AI SDK | `<provider>:<modelId>`, or `id` | yes | native | `auto`, `required`, `tool` | passed through | provider-reported when the model reports one |
 | Claude Code | `claude-code:<model>` | yes | native, one selected tool | `tool`, or `required` with one tool | not enforced; a warning when exceeded | provider-reported when unambiguous |
 | Codex | `codex:<model>` | yes | native, one selected tool | `tool`, or `required` with one tool | not enforced | configured |
@@ -286,8 +286,9 @@ for fixtures.
 Request mapping: `system` messages are joined with blank lines into `system`;
 `tool` messages are sent as `user` messages; tool results become `tool_result`
 blocks. `toolChoice` maps to `tool`, `any` (for `required`), or `auto`. The
-result's `model` is the response's model, reported as `provider-reported`, and
-text blocks are joined with newlines.
+result's `model` is the response's model, reported as `provider-reported`; if
+the response has no model, the configured model is reported as `configured`.
+Text blocks are joined with newlines.
 
 ## AI SDK bridge
 
@@ -353,7 +354,8 @@ Common failures and what they mean. The message text is the `message` of the
 | `Required tool choice needs exactly one declared tool` | `{ type: "required" }` was used with several tools on a harness runtime. Declare one tool or name it. |
 | `Selected tool is not declared` | `toolChoice.name` does not match any tool in `tools`. |
 | `Tool choice requires a declared tool` | Claude Code or Codex received a non-`auto` `toolChoice` with no tools. |
-| `OpenCode structured output requires explicit prompted opt-in` | OpenCode received tools while `structuredOutput` is `"reject"`. Pass `structuredOutput: "prompted"`, or `allowPromptedStructuredOutput` through the profile resolver. |
+| `OpenCode structured output requires explicit prompted opt-in` | `createOpenCodeRuntime()` received tools while `structuredOutput` is `"reject"`. Pass `structuredOutput: "prompted"`. |
+| `opencode structured tools require explicit prompted-output opt-in` | `createModelRuntimeProfile()` was given the `opencode` profile without `allowPromptedStructuredOutput`. The profile always runs OpenCode in prompted mode, so the flag is required even for text-only use. |
 | `Codex structured-output schema is incompatible at <pointer>: <reason>` | The selected tool's schema breaks a [Codex schema rule](#codex-runtime). |
 | `Harness executable is unavailable` | The CLI is not on `PATH`. Install it or pass `executable`. |
 | `Harness output exceeded the configured limit` | stdout and stderr together passed `maxOutputBytes` (default 8 MiB). |

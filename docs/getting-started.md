@@ -61,12 +61,23 @@ throws a `RUNTIME_FAILURE`. It also records every request it received in
 ## Check a runtime's contract
 
 `checkRuntimeConformance()` reads the runtime's declared capabilities, makes
-one small invocation, and returns a report instead of throwing.
+one small invocation, and returns a report instead of throwing. A fake runtime
+needs one queued result for that invocation.
 
 ```ts
-import { checkRuntimeConformance } from "@kontourai/relay";
+import { FakeModelRuntime, checkRuntimeConformance } from "@kontourai/relay";
 
-const report = await checkRuntimeConformance(runtime);
+const fake = new FakeModelRuntime([{
+  provider: "fixture",
+  model: "fixture-1",
+  modelSource: "configured",
+  outputText: "ok",
+  toolCalls: [],
+  usage: {},
+  latencyMs: 0,
+}]);
+
+const report = await checkRuntimeConformance(fake);
 if (!report.passed) console.error(report.checks.filter((check) => !check.passed));
 ```
 
@@ -109,8 +120,8 @@ supports.
 
 ## Handle failures
 
-Every runtime rejects with a `ModelInvocationError`. Branch on its `code` and
-`retryable` flag rather than on the message text.
+Invocation failures reject with a `ModelInvocationError`. Branch on its `code`
+and `retryable` flag rather than on the message text.
 
 ```ts
 import { ModelInvocationError } from "@kontourai/relay";
@@ -119,7 +130,7 @@ try {
   await runtime.invoke(request);
 } catch (error) {
   if (error instanceof ModelInvocationError && error.retryable) {
-    // RATE_LIMITED or PROVIDER_UNAVAILABLE: try again later or use another runtime.
+    // Usually RATE_LIMITED or PROVIDER_UNAVAILABLE: try again later or use another runtime.
   }
   throw error;
 }
