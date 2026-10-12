@@ -31,7 +31,7 @@ jobs:
           package_json_file: relay/package.json
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
@@ -78,7 +78,7 @@ jobs:
       # writes the .npmrc that `npm publish` reads. Dropping it would leave the
       # interaction between pnpm's install and npm's publish config untested.
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
