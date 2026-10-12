@@ -1,5 +1,14 @@
 # Relay
 
+**One provider-neutral way to invoke models across SDKs, frameworks, and harness CLIs.**
+
+[![npm version](https://img.shields.io/npm/v/%40kontourai%2Frelay)](https://www.npmjs.com/package/@kontourai/relay)
+[![CI](https://github.com/kontourai/relay/actions/workflows/ci.yml/badge.svg)](https://github.com/kontourai/relay/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-kontourai.github.io-blue)](https://kontourai.github.io/relay/)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+[Documentation](https://kontourai.github.io/relay/)
+
 Relay provides one provider-neutral way to invoke models across direct SDKs,
 local engines, hosted services, and agent frameworks.
 
