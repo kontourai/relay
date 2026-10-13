@@ -1,5 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "purpose": "Invoke models across runtimes through one provider-neutral contract with inspectable results and failures.",
+  "builtOn": [],
   "product": "relay",
   "title": "Relay",
   "tagline": "One provider-neutral way to invoke models across SDKs, frameworks, and harness CLIs",

@@ -9,7 +9,7 @@ requests, results, capabilities, usage, and failures across adapters.
 - Provider-specific dependencies stay behind optional subpath exports.
 - Add conformance coverage for every runtime adapter.
 - Install dependencies with `pnpm install`. Run `npm run verify` before pushing.
-- Docs publish with docs-kit: `docs-kit.json` lists the published docs and MCP
+- Docs publish with Corpus: `corpus.json` lists the published docs and MCP
   topics, and `npm run docs:check` is the gate. When you change code a
   document `covers`, update that document.
 
