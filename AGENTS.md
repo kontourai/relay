@@ -20,6 +20,17 @@ are still run with `npm run …` — that only invokes `package.json` scripts an
 does not depend on which tool installed `node_modules`. Publishing stays on
 `npm publish` so provenance and the registry binding are unchanged.
 
+## Documentation freshness
+
+The Corpus gate is strict for the source paths declared in `corpus.json`.
+Review the selected canonical guides when those files change. Update inaccurate
+claims in the same PR. When the prose remains accurate, record a new local
+input/output byte review with a concrete explanation and limits in
+`corpus-content.json`; do not add filler text or refresh hashes without review.
+The shared [Corpus review contract](https://github.com/kontourai/corpus/blob/b127e35a818b532369843731b3c64792baade83e/docs/related-content.md#review-an-unchanged-covering-document)
+owns that format. CI uses the reviewed shared pin; for local review checks use
+that same Corpus revision with `check --base origin/main`.
+
 <!-- veritas:governance-block:start -->
 This repo uses Veritas for AI governance. Read `.veritas/GOVERNANCE.md` before making changes.
 After changes, run `npx --no @kontourai/veritas readiness` and address any FAIL lines before finishing.
