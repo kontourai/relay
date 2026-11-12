@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { ModelInvocationError, type ModelExecutionEnvironment, type ModelInvocationOptions, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime, type ModelRuntimeCapabilities } from "./types.js";
 
 export interface ProcessInvocation {
@@ -142,6 +142,60 @@ interface CapturedProcess {
 const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 /**
+ * How long a terminated process group has to exit after `SIGTERM` before it is
+ * sent `SIGKILL`. Long enough for a harness to flush and exit cleanly; short
+ * enough that a child ignoring `SIGTERM` cannot keep running.
+ */
+export const PROCESS_TERMINATION_GRACE_MS = 2000;
+
+// On POSIX each child leads its own process group so termination reaches the
+// processes it started. A detached group no longer receives the terminal's
+// Ctrl-C, so groups still running when the host exits normally are killed here.
+const liveGroups = new Set<number>();
+let exitHookInstalled = false;
+function trackGroup(pid: number): void {
+  liveGroups.add(pid);
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.once("exit", () => {
+    for (const group of liveGroups) signalGroup(group, "SIGKILL");
+  });
+}
+
+function signalGroup(pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    return false; // ESRCH: every process in the group has already exited.
+  }
+}
+
+/**
+ * POSIX: `SIGTERM` to the whole process group, then `SIGKILL` to whatever is
+ * left after `PROCESS_TERMINATION_GRACE_MS`. Windows: only the direct child is
+ * terminated; processes it started are not (Relay does not shell out to
+ * `taskkill`).
+ */
+function terminate(child: ChildProcess, grouped: boolean): void {
+  const pid = child.pid;
+  if (!grouped || pid === undefined) {
+    child.kill("SIGTERM");
+    return;
+  }
+  if (!signalGroup(pid, "SIGTERM")) {
+    liveGroups.delete(pid);
+    return;
+  }
+  const escalate = setTimeout(() => {
+    signalGroup(pid, "SIGKILL");
+    liveGroups.delete(pid);
+  }, PROCESS_TERMINATION_GRACE_MS);
+  // The escalation must not keep the host alive; the exit hook covers that case.
+  escalate.unref();
+}
+
+/**
  * Generic non-interactive harness transport. A profile-owned codec maps the
  * provider-neutral request to a supported CLI protocol and parses its output.
  */
@@ -214,11 +268,15 @@ async function executeProcess(input: {
   signal?: AbortSignal;
 }): Promise<CapturedProcess> {
   return new Promise((resolve, reject) => {
+    const grouped = process.platform !== "win32";
     const child = spawn(input.executable, [...input.invocation.args], {
       ...(input.cwd ? { cwd: input.cwd } : {}),
       env: input.environment,
       stdio: ["pipe", "pipe", "pipe"],
+      // On Windows `detached` opens a new console instead of a process group.
+      detached: grouped,
     });
+    if (grouped && child.pid !== undefined) trackGroup(child.pid);
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let outputBytes = 0;
@@ -228,7 +286,7 @@ async function executeProcess(input: {
       if (settled) return;
       settled = true;
       cleanup();
-      child.kill("SIGTERM");
+      terminate(child, grouped);
       reject(error);
     };
     const onAbort = () => finishError(aborted());
@@ -255,6 +313,9 @@ async function executeProcess(input: {
       ));
     });
     child.on("close", (code) => {
+      // A normal exit leaves the group alone: a harness may deliberately leave
+      // a process running, as it could before process groups were used.
+      if (!settled && child.pid !== undefined) liveGroups.delete(child.pid);
       if (settled) return;
       settled = true;
       cleanup();

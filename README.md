@@ -142,18 +142,24 @@ const isolatedRuntime = createClaudeCodeRuntime({
   environmentInheritance: { inherit: "allowlist", allow: [] },
   // Adds --safe-mode (no CLAUDE.md, hooks, MCP servers, skills, or plugins) and
   // --setting-sources "" (no user, project, or local settings files, so no
-  // settings `env` or apiKeyHelper). Subscription login still works; admin
-  // policy settings still apply.
+  // settings `env` or apiKeyHelper). The stored login still applies, and so do
+  // admin policy settings (including their env and apiKeyHelper).
   isolation: "safe-mode",
 });
 await isolatedRuntime.invoke(request, { signal: AbortSignal.timeout(120_000) });
 ```
 
-A gateway or key set only in a settings file is not used under isolation. Put
+Isolation does not change the stored login. A stored API-key login
+(`primaryApiKey` in `~/.claude.json`) is still used instead of a subscription,
+and admin-managed policy settings, including their `env` and `apiKeyHelper`,
+still apply. A gateway or key set only in a settings file is not used under
+isolation. Put
 it in the environment and name it in `allow` (for example
 `ANTHROPIC_BASE_URL`) when the run should use it. Relay has no default timeout,
 and a run against an unreachable endpoint may never exit, so unattended hosts
-should pass an abort signal. Each result's `execution` record lists the
+should pass an abort signal. On macOS and Linux an abort terminates the
+harness's whole process group (`SIGTERM`, then `SIGKILL` after 2 s); on Windows
+only the direct child is terminated. Each result's `execution` record lists the
 variable names the child received and the isolation flags that were passed.
 See the [reference](docs/reference.md#claude-code-runtime) for exactly what
 each flag disables.

@@ -92,6 +92,11 @@ export function createClaudeCodeRuntime(options: ClaudeCodeRuntimeOptions): Mode
 
 /** Public for profile conformance fixtures; applications should construct the runtime. */
 export function createClaudeCodeCodec(model: string, codecOptions: ClaudeCodeCodecOptions = {}): ProcessRuntimeCodec {
+  // A value starting with "-" would be parsed by the CLI (and by the isolation
+  // record) as an option rather than a model id.
+  if (typeof model !== "string" || model.length === 0 || model.startsWith("-")) {
+    throw new TypeError("Claude Code model must be a non-empty id that does not start with \"-\"");
+  }
   const isolation = codecOptions.isolation ?? "none";
   if (!Object.hasOwn(ISOLATION_FLAGS, isolation)) {
     throw new TypeError(`Unknown Claude Code isolation: ${String(isolation)}`);

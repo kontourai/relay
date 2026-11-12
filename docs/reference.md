@@ -227,7 +227,20 @@ throws a `TypeError` at construction.
 Failure behaviour:
 
 - A signal that is already aborted, or aborts while the child runs, throws
-  `ABORTED`. A running child is sent `SIGTERM`.
+  `ABORTED` at once, and the child is terminated in the background:
+  - On macOS and Linux each child is spawned as the leader of its own process
+    group. Termination sends `SIGTERM` to the whole group, so the processes the
+    harness started are stopped too. Whatever is still running
+    `PROCESS_TERMINATION_GRACE_MS` (2000 ms) later is sent `SIGKILL`.
+  - On Windows only the direct child is terminated. Processes it started keep
+    running, because Relay does not shell out to `taskkill`.
+  - A child that exits normally is left alone, including any process it
+    deliberately left running.
+  - A process group no longer receives the terminal's Ctrl-C. Relay kills any
+    group still running when the host exits normally (`process.exit()` or an
+    empty event loop). A host killed by a signal it does not handle cannot run
+    that cleanup, so hosts that handle `SIGINT` or `SIGTERM` should abort their
+    invocations first.
 - The transport has no timeout of its own. A harness that never answers (for
   example, one pointed at an unreachable endpoint) runs until the signal
   aborts. Unattended hosts should always pass one, such as
@@ -249,7 +262,7 @@ Failure behaviour:
 
 | Option | Meaning |
 | --- | --- |
-| `model` | Passed to `--model`. Required. |
+| `model` | Passed to `--model`. Required. An empty id, or one starting with `-` (which the CLI would read as an option), throws a `TypeError` at construction. |
 | `executable` | Default `claude`. |
 | `cwd`, `environment`, `environmentInheritance`, `maxOutputBytes` | As for the process transport. |
 | `isolation` | `"none"` (default) or `"safe-mode"`. See below. |
@@ -284,10 +297,21 @@ can set the endpoint and credential. It also includes hooks (a
 | `--safe-mode` | `CLAUDE.md` files, hooks, MCP servers, skills, installed plugins, custom commands and agents, output styles. It does **not** stop settings files from applying their `env` block or `apiKeyHelper`. |
 | `--setting-sources ""` | Every user (`~/.claude/settings.json`), project (`.claude/settings.json`), and local (`.claude/settings.local.json`) settings file, including their `env` and `apiKeyHelper`. `local` would not be enough: it still loads `.claude/settings.local.json` from the working directory. |
 
-What still applies: subscription login (OAuth, including the macOS keychain),
-model selection, built-in permissions behaviour, admin-managed (policy)
-settings, which neither flag can disable, and the child's environment, which
-`environmentInheritance` controls.
+What still applies:
+
+- The stored login: subscription OAuth (including the macOS keychain), **or a
+  stored API-key login** (`primaryApiKey` in `~/.claude.json`). A stored API
+  key replaces subscription authentication and is sent under isolation, so
+  isolation does not guarantee subscription billing. Verified on 2.1.321: a
+  throwaway `HOME` whose `.claude.json` held a synthetic `primaryApiKey` sent
+  that key under `--safe-mode --setting-sources ""`.
+- Admin-managed (policy) settings, which neither flag can disable. Their `env`
+  block and `apiKeyHelper` therefore still apply, so an administrator's policy
+  can still set the endpoint or credential. (This follows from the CLI's
+  help text; it was not tested, because writing managed settings needs
+  administrator rights.)
+- Model selection and built-in permissions behaviour.
+- The child's environment, which `environmentInheritance` controls.
 
 A gateway or API key configured only in a settings file is therefore **not**
 used under isolation. A host that needs one should put it in the environment

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { createClaudeCodeCodec, createClaudeCodeRuntime, type ClaudeCodeRuntimeOptions } from "../src/claude-code.js";
-import { PROCESS_ENVIRONMENT_BASE, buildProcessEnvironment } from "../src/process.js";
+import { PROCESS_ENVIRONMENT_BASE, PROCESS_TERMINATION_GRACE_MS, buildProcessEnvironment } from "../src/process.js";
 import { createModelRuntimeProfile } from "../src/runtime-profile.js";
 import { RecordingModelRuntime, ReplayModelRuntime } from "../src/replay.js";
 import { ModelInvocationError } from "../src/types.js";
@@ -22,9 +22,16 @@ const planted = {
 // then prints the JSON result shape the real CLI prints.
 const fakeClaude = `#!/usr/bin/env node
 const fs = require("node:fs");
-fs.writeFileSync(process.env.RELAY_FAKE_DUMP, JSON.stringify({ argv: process.argv.slice(2), env: process.env, pid: process.pid }));
+const mode = process.env.RELAY_FAKE_HANG;
+let grandchildPid;
+// A process the harness started; it holds no pipe to Relay.
+if (mode === "grandchild") {
+  grandchildPid = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], { stdio: "ignore" }).pid;
+}
+if (mode === "ignore-term") process.on("SIGTERM", () => undefined);
+fs.writeFileSync(process.env.RELAY_FAKE_DUMP, JSON.stringify({ argv: process.argv.slice(2), env: process.env, pid: process.pid, grandchildPid }));
 // Stands in for a run that never answers (seen with an unreachable endpoint).
-if (process.env.RELAY_FAKE_HANG) setInterval(() => undefined, 1000);
+if (mode) setInterval(() => undefined, 1000);
 else {
 process.stdin.resume();
 process.stdin.on("end", () => process.stdout.write(JSON.stringify({
@@ -34,7 +41,49 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
 }
 `;
 
-interface Dump { argv: string[]; env: Record<string, string>; pid: number }
+interface Dump { argv: string[]; env: Record<string, string>; pid: number; grandchildPid?: number }
+
+// Every fake process a test starts, so a failing test cannot leave one running
+// (a leftover holds the test runner open until its file timeout).
+const started = new Set<number>();
+function killLeftovers(): void {
+  for (const pid of started) {
+    try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+  }
+  started.clear();
+}
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+async function waitUntil(condition: () => boolean | Promise<boolean>, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return condition();
+}
+async function readDump(dumpPath: string): Promise<Dump | undefined> {
+  try { return JSON.parse(await readFile(dumpPath, "utf8")) as Dump; } catch { return undefined; }
+}
+
+// Starts a hung fake in `mode`, aborts it once it has recorded its process ids,
+// and returns those ids after the invocation settled.
+async function abortHung(mode: string): Promise<Dump> {
+  const dumpPath = path.join(directory, `dump-${mode}.json`);
+  const controller = new AbortController();
+  const pending = createClaudeCodeRuntime({
+    model: "sonnet", executable, isolation: "safe-mode",
+    environment: { RELAY_FAKE_DUMP: dumpPath, RELAY_FAKE_HANG: mode },
+  }).invoke(request, { signal: controller.signal });
+  let dump: Dump | undefined;
+  assert.ok(await waitUntil(async () => (dump = await readDump(dumpPath)) !== undefined, 10_000), "fake never started");
+  started.add(dump!.pid);
+  if (dump!.grandchildPid) started.add(dump!.grandchildPid);
+  controller.abort();
+  await assert.rejects(pending, (error: unknown) => error instanceof ModelInvocationError && error.code === "ABORTED");
+  return dump!;
+}
 
 const request = { messages: [{ role: "user" as const, content: "synthetic excerpt" }] };
 const safeModeFlags = ["--safe-mode", "--setting-sources", ""];
@@ -55,6 +104,7 @@ before(async () => {
 });
 
 after(async () => {
+  killLeftovers();
   for (const [name, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
@@ -88,6 +138,8 @@ describe("Claude Code child environment and isolation", () => {
     for (const name of Object.keys(process.env)) assert.ok(name in dump.env, name);
     assert.deepEqual(dump.argv, defaultArgs);
     assert.deepEqual(result.execution, { isolationFlags: [], environment: { inherit: "all" } });
+    // A completed child does not outlive the invocation, process group or not.
+    assert.equal(alive(dump.pid), false);
   });
 
   it("gives an allowlisted child only the base, the allowed names, and the overlay", async () => {
@@ -144,19 +196,67 @@ describe("Claude Code child environment and isolation", () => {
     assert.equal(codec.parse(output, request).execution, undefined);
   });
 
-  it("kills a hung child when the caller aborts", async () => {
-    const dumpPath = path.join(directory, "dump-hang.json");
-    const runtime = createClaudeCodeRuntime({
-      model: "sonnet", executable, isolation: "safe-mode",
-      environment: { RELAY_FAKE_DUMP: dumpPath, RELAY_FAKE_HANG: "1" },
-    });
-    const pending = runtime.invoke(request, { signal: AbortSignal.timeout(500) });
-    await assert.rejects(pending, (error: unknown) => error instanceof ModelInvocationError && error.code === "ABORTED");
-    const { pid } = JSON.parse(await readFile(dumpPath, "utf8")) as Dump;
-    const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
-    const deadline = Date.now() + 5000;
-    while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
-    assert.equal(alive(), false, "hung child still running after abort");
+  it("kills a hung child when the caller aborts", { timeout: 30_000 }, async () => {
+    try {
+      const { pid } = await abortHung("hang");
+      assert.ok(await waitUntil(() => !alive(pid), 10_000), "hung child still running after abort");
+    } finally {
+      killLeftovers();
+    }
+  });
+
+  it("kills the processes a hung child started when the caller aborts", { skip: process.platform === "win32", timeout: 30_000 }, async () => {
+    try {
+      const { pid, grandchildPid } = await abortHung("grandchild");
+      assert.ok(grandchildPid, "fake did not start a grandchild");
+      assert.ok(await waitUntil(() => !alive(pid) && !alive(grandchildPid), 10_000), "child or grandchild still running after abort");
+    } finally {
+      killLeftovers();
+    }
+  });
+
+  it("escalates to SIGKILL when a child ignores SIGTERM", { skip: process.platform === "win32", timeout: 30_000 }, async () => {
+    try {
+      const { pid } = await abortHung("ignore-term");
+      // Bounded well beyond the grace period; only SIGKILL can end this child.
+      assert.ok(await waitUntil(() => !alive(pid), PROCESS_TERMINATION_GRACE_MS + 8_000), "SIGTERM-ignoring child still running after the grace period");
+    } finally {
+      killLeftovers();
+    }
+  });
+
+  it("kills a still-running child group when the host exits normally", { skip: process.platform === "win32", timeout: 30_000 }, async () => {
+    const dumpPath = path.join(directory, "dump-host-exit.json");
+    const host = path.join(directory, "host.mjs");
+    const moduleUrl = new URL("../src/claude-code.js", import.meta.url).href;
+    await writeFile(host, `
+import { createClaudeCodeRuntime } from ${JSON.stringify(moduleUrl)};
+import { existsSync } from "node:fs";
+createClaudeCodeRuntime({ model: "sonnet", executable: ${JSON.stringify(executable)},
+  environment: { RELAY_FAKE_DUMP: ${JSON.stringify(dumpPath)}, RELAY_FAKE_HANG: "grandchild" } })
+  .invoke({ messages: [{ role: "user", content: "x" }] }).catch(() => undefined);
+const timer = setInterval(() => { if (existsSync(${JSON.stringify(dumpPath)})) { clearInterval(timer); process.exit(0); } }, 25);
+`, "utf8");
+    try {
+      const { spawnSync } = await import("node:child_process");
+      const exited = spawnSync(process.execPath, [host], { stdio: "ignore", timeout: 20_000 });
+      assert.equal(exited.status, 0, "host did not exit normally");
+      const dump = await readDump(dumpPath);
+      assert.ok(dump?.grandchildPid, "fake did not record its processes");
+      started.add(dump.pid);
+      started.add(dump.grandchildPid);
+      assert.ok(await waitUntil(() => !alive(dump.pid) && !alive(dump.grandchildPid!), 10_000), "child group outlived the host");
+    } finally {
+      killLeftovers();
+    }
+  });
+
+  it("rejects a model id that would be read as an option", () => {
+    for (const model of ["--setting-sources", "--safe-mode", "-m", ""]) {
+      assert.throws(() => createClaudeCodeRuntime({ model }), TypeError, model);
+      assert.throws(() => createClaudeCodeCodec(model), TypeError, model);
+    }
+    assert.doesNotThrow(() => createClaudeCodeRuntime({ model: "claude-sonnet-4-5" }));
   });
 
   it("rejects malformed policies at construction", () => {
