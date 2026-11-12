@@ -94,7 +94,11 @@ export interface ModelInvocationResult {
   latencyMs: number;
   stopReason?: string;
   warnings?: readonly string[];
-  /** Set by process-backed runtimes; absent for SDK and in-memory runtimes. */
+  /**
+   * Set by process-backed runtimes. SDK runtimes leave it absent. Replay and
+   * fake runtimes return the recorded or supplied result as is, including this
+   * field, because it describes the run that produced that result.
+   */
   execution?: ModelExecutionRecord;
 }
 

@@ -131,22 +131,32 @@ Authentication remains owned by the installed harness. Relay does not inspect,
 copy, or persist its credential configuration.
 
 By default the child inherits the host's whole environment and the CLI loads
-the operator's settings, hooks, MCP servers, and `CLAUDE.md` files. A host that
-sends sensitive content should opt out of both:
+the operator's settings files (including their `env` block and
+`apiKeyHelper`), hooks, MCP servers, and `CLAUDE.md` files. A host that sends
+sensitive content should opt out of both:
 
 ```ts
 const isolatedRuntime = createClaudeCodeRuntime({
   model: "sonnet",
   // Only PATH, HOME, USER, and TMPDIR (or the Windows equivalents), plus names you list.
   environmentInheritance: { inherit: "allowlist", allow: [] },
-  // Adds --safe-mode: no hooks, MCP servers, or CLAUDE.md; subscription login still works.
+  // Adds --safe-mode (no CLAUDE.md, hooks, MCP servers, skills, or plugins) and
+  // --setting-sources "" (no user, project, or local settings files, so no
+  // settings `env` or apiKeyHelper). Subscription login still works; admin
+  // policy settings still apply.
   isolation: "safe-mode",
 });
+await isolatedRuntime.invoke(request, { signal: AbortSignal.timeout(120_000) });
 ```
 
-Name a gateway or key in `allow` (for example `ANTHROPIC_BASE_URL`) when the
-run should use it. Each result's `execution` record lists the variable names
-the child received and the isolation flags that were passed.
+A gateway or key set only in a settings file is not used under isolation. Put
+it in the environment and name it in `allow` (for example
+`ANTHROPIC_BASE_URL`) when the run should use it. Relay has no default timeout,
+and a run against an unreachable endpoint may never exit, so unattended hosts
+should pass an abort signal. Each result's `execution` record lists the
+variable names the child received and the isolation flags that were passed.
+See the [reference](docs/reference.md#claude-code-runtime) for exactly what
+each flag disables.
 
 Claude Code does not currently expose a per-invocation output-token ceiling
 through this profile, so it reports `outputTokenLimitFidelity: "unavailable"`.

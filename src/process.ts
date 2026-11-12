@@ -97,6 +97,14 @@ export function buildProcessEnvironment(input: {
       if (wanted.has(key(name))) inherited[name] = value;
     }
   }
+  if ((input.platform ?? process.platform) === "win32" && input.overlay) {
+    // Windows names are case-insensitive: drop an inherited `Path` before an
+    // overlay `PATH` is applied, so the overlay wins and only one name is passed.
+    const overlaid = new Set(Object.keys(input.overlay).map((name) => name.toUpperCase()));
+    for (const name of Object.keys(inherited)) {
+      if (overlaid.has(name.toUpperCase()) && !Object.hasOwn(input.overlay, name)) delete inherited[name];
+    }
+  }
   const environment: NodeJS.ProcessEnv = { ...inherited, ...input.overlay };
   // Node drops undefined values when spawning; drop them here so the record matches.
   for (const [name, value] of Object.entries(environment)) {

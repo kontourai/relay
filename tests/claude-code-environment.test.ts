@@ -6,6 +6,8 @@ import { after, before, describe, it } from "node:test";
 import { createClaudeCodeCodec, createClaudeCodeRuntime, type ClaudeCodeRuntimeOptions } from "../src/claude-code.js";
 import { PROCESS_ENVIRONMENT_BASE, buildProcessEnvironment } from "../src/process.js";
 import { createModelRuntimeProfile } from "../src/runtime-profile.js";
+import { RecordingModelRuntime, ReplayModelRuntime } from "../src/replay.js";
+import { ModelInvocationError } from "../src/types.js";
 
 // Synthetic values only; none of these is a real credential.
 const planted = {
@@ -20,17 +22,22 @@ const planted = {
 // then prints the JSON result shape the real CLI prints.
 const fakeClaude = `#!/usr/bin/env node
 const fs = require("node:fs");
-fs.writeFileSync(process.env.RELAY_FAKE_DUMP, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));
+fs.writeFileSync(process.env.RELAY_FAKE_DUMP, JSON.stringify({ argv: process.argv.slice(2), env: process.env, pid: process.pid }));
+// Stands in for a run that never answers (seen with an unreachable endpoint).
+if (process.env.RELAY_FAKE_HANG) setInterval(() => undefined, 1000);
+else {
 process.stdin.resume();
 process.stdin.on("end", () => process.stdout.write(JSON.stringify({
   result: "ok", is_error: false, stop_reason: "end_turn",
   usage: { input_tokens: 1, output_tokens: 1 }, modelUsage: { "fixture-model": {} },
 })));
+}
 `;
 
-interface Dump { argv: string[]; env: Record<string, string> }
+interface Dump { argv: string[]; env: Record<string, string>; pid: number }
 
 const request = { messages: [{ role: "user" as const, content: "synthetic excerpt" }] };
+const safeModeFlags = ["--safe-mode", "--setting-sources", ""];
 const defaultArgs = ["--print", "--output-format", "json", "--model", "sonnet", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk"];
 let directory = "";
 let executable = "";
@@ -118,10 +125,10 @@ describe("Claude Code child environment and isolation", () => {
     assert.ok(result.execution?.environment?.inherit === "allowlist" && !result.execution.environment.names.includes("TMPDIR"));
   });
 
-  it("adds --safe-mode for safe-mode isolation and records the flag it passed", async () => {
+  it("adds --safe-mode and --setting-sources \"\" for safe-mode isolation and records both", async () => {
     const { result, dump } = await run({ isolation: "safe-mode" });
-    assert.deepEqual(dump.argv, [...defaultArgs, "--safe-mode"]);
-    assert.deepEqual(result.execution?.isolationFlags, ["--safe-mode"]);
+    assert.deepEqual(dump.argv, [...defaultArgs, ...safeModeFlags]);
+    assert.deepEqual(result.execution?.isolationFlags, safeModeFlags);
     const none = await run({ isolation: "none" });
     assert.deepEqual(none.dump.argv, defaultArgs);
   });
@@ -131,8 +138,25 @@ describe("Claude Code child environment and isolation", () => {
     const output = { stdout: JSON.stringify({ result: "ok", is_error: false }), stderr: "", exitCode: 0, latencyMs: 1 };
     assert.deepEqual(codec.parse(output, request, { args: defaultArgs }).execution, { isolationFlags: [] });
     assert.deepEqual(createClaudeCodeCodec("sonnet").parse(output, request, { args: [...defaultArgs, "--safe-mode"] }).execution, { isolationFlags: ["--safe-mode"] });
+    // The empty value of --tools is not mistaken for an isolation flag; the --setting-sources value is kept.
+    assert.deepEqual(createClaudeCodeCodec("sonnet").parse(output, request, { args: [...defaultArgs, "--setting-sources", "user"] }).execution, { isolationFlags: ["--setting-sources", "user"] });
     // Without the spawned argv there is nothing to report, so no record is made up.
     assert.equal(codec.parse(output, request).execution, undefined);
+  });
+
+  it("kills a hung child when the caller aborts", async () => {
+    const dumpPath = path.join(directory, "dump-hang.json");
+    const runtime = createClaudeCodeRuntime({
+      model: "sonnet", executable, isolation: "safe-mode",
+      environment: { RELAY_FAKE_DUMP: dumpPath, RELAY_FAKE_HANG: "1" },
+    });
+    const pending = runtime.invoke(request, { signal: AbortSignal.timeout(500) });
+    await assert.rejects(pending, (error: unknown) => error instanceof ModelInvocationError && error.code === "ABORTED");
+    const { pid } = JSON.parse(await readFile(dumpPath, "utf8")) as Dump;
+    const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const deadline = Date.now() + 5000;
+    while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(alive(), false, "hung child still running after abort");
   });
 
   it("rejects malformed policies at construction", () => {
@@ -156,8 +180,8 @@ describe("Claude Code child environment and isolation", () => {
     }).invoke(request);
     const dump = JSON.parse(await readFile(dumpPath, "utf8")) as Dump;
     assert.equal(dump.env.GH_TOKEN, undefined);
-    assert.deepEqual(dump.argv, [...defaultArgs, "--safe-mode"]);
-    assert.deepEqual(result.execution?.isolationFlags, ["--safe-mode"]);
+    assert.deepEqual(dump.argv, [...defaultArgs, ...safeModeFlags]);
+    assert.deepEqual(result.execution?.isolationFlags, safeModeFlags);
     assert.throws(() => createModelRuntimeProfile({ profile: "codex", model: "gpt-5", isolation: "safe-mode" }), /does not support isolation/);
     assert.throws(() => createModelRuntimeProfile({
       profile: "opencode", model: "zai/glm-5", allowPromptedStructuredOutput: true,
@@ -177,5 +201,32 @@ describe("buildProcessEnvironment", () => {
       buildProcessEnvironment({ parent, inheritance: { inherit: "allowlist", allow: ["ANTHROPIC_BASE_URL"] }, platform: "linux" }),
       {},
     );
+  });
+  it("lets an overlay replace a differently cased inherited name on Windows", () => {
+    const parent = { Path: "C:\\bin", SystemRoot: "C:\\Windows" };
+    for (const inheritance of [{ inherit: "all" as const }, { inherit: "allowlist" as const, allow: [] }]) {
+      assert.deepEqual(
+        buildProcessEnvironment({ parent, overlay: { PATH: "D:\\tools" }, inheritance, platform: "win32" }),
+        { SystemRoot: "C:\\Windows", PATH: "D:\\tools" },
+      );
+    }
+    // Elsewhere names are case-sensitive, so both stay.
+    assert.deepEqual(
+      buildProcessEnvironment({ parent, overlay: { PATH: "/tools" }, platform: "linux" }),
+      { Path: "C:\\bin", SystemRoot: "C:\\Windows", PATH: "/tools" },
+    );
+  });
+});
+
+describe("execution record through record and replay", () => {
+  it("replays the execution record of the run that produced the result", async () => {
+    const recording = new RecordingModelRuntime(createClaudeCodeRuntime({
+      model: "sonnet", executable, isolation: "safe-mode",
+      environment: { RELAY_FAKE_DUMP: path.join(directory, "dump-replay.json") },
+    }));
+    const live = await recording.invoke(request);
+    const replayed = await new ReplayModelRuntime(recording.records).invoke(request);
+    assert.deepEqual(replayed.execution, live.execution);
+    assert.deepEqual(replayed.execution?.isolationFlags, safeModeFlags);
   });
 });

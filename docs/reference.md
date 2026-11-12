@@ -43,7 +43,7 @@ Exported as types from `@kontourai/relay`.
 | `ModelTool` | `name`, optional `description`, `inputSchema` |
 | `ModelToolChoice` | `{ type: "auto" }`, `{ type: "required" }`, or `{ type: "tool", name }` |
 | `ModelInvocationResult` | `provider`, `model`, `modelSource?`, `outputText`, `toolCalls`, `usage`, `latencyMs`, `stopReason?`, `warnings?`, `execution?` |
-| `ModelExecutionRecord` | Optional `environment: ModelExecutionEnvironment` and `isolationFlags: string[]`. Set by process-backed runtimes from what they actually passed to the child. |
+| `ModelExecutionRecord` | Optional `environment: ModelExecutionEnvironment` and `isolationFlags: string[]`. Set by process-backed runtimes from what they actually passed to the child. SDK runtimes leave it absent; `ReplayModelRuntime` and `FakeModelRuntime` return the recorded or supplied result as is, including this field. |
 | `ModelExecutionEnvironment` | `{ inherit: "all" }` or `{ inherit: "allowlist", names }`: the variable names the child received, never their values |
 | `ModelSource` | `"provider-reported"` or `"configured"` |
 | `ModelToolCall` | `id`, `name`, `input` |
@@ -207,6 +207,9 @@ are set, plus the names in `allow`, plus the `environment` overlay:
 | | `TEMP`, `TMP` | Temporary files. |
 
 Names match exactly, except on Windows, where they match case-insensitively.
+On Windows an overlay name also replaces an inherited name that differs only
+in case (an overlay `PATH` replaces an inherited `Path`), so the child receives
+one variable. This applies to both inheritance modes.
 `PROCESS_ENVIRONMENT_BASE` exports the lists, and
 `buildProcessEnvironment({ parent, overlay?, inheritance?, platform? })`
 returns the environment the transport would spawn with. Anything else the
@@ -225,6 +228,10 @@ Failure behaviour:
 
 - A signal that is already aborted, or aborts while the child runs, throws
   `ABORTED`. A running child is sent `SIGTERM`.
+- The transport has no timeout of its own. A harness that never answers (for
+  example, one pointed at an unreachable endpoint) runs until the signal
+  aborts. Unattended hosts should always pass one, such as
+  `{ signal: AbortSignal.timeout(ms) }`.
 - `prepare()` throwing anything other than a `ModelInvocationError` becomes
   `INVALID_REQUEST`.
 - A missing executable (`ENOENT`) is a retryable `PROVIDER_UNAVAILABLE`. Any
@@ -264,24 +271,53 @@ descriptions.
 - `createClaudeCodeCodec(model, { isolation? })` is exported for profile
   conformance fixtures. Applications should construct the runtime.
 
-By default the CLI loads the operator's whole configuration: settings, hooks
-(a `UserPromptSubmit` hook sees the prompt), MCP servers, plugins, skills, and
-`CLAUDE.md` files from the working directory and above. `isolation:
-"safe-mode"` appends `--safe-mode`, which disables those customizations while
-subscription login, model selection, and permissions work normally.
-Admin-managed (policy) settings still apply. Verified against Claude Code
-2.1.321: with a project `CLAUDE.md` and a project `UserPromptSubmit` hook in
-the working directory, a default run followed the `CLAUDE.md` and fired the
-hook, and a `--safe-mode` run did neither and still authenticated with the
-subscription login. Claude Code rejects an unknown option and exits 1, so a
-CLI without the flag fails the invocation (`RUNTIME_FAILURE`) rather than
-running unisolated. `--bare` is not used because it never reads
-the subscription login.
+By default the CLI loads the operator's whole configuration. That includes
+user, project, and local settings files, whose `env` block and `apiKeyHelper`
+can set the endpoint and credential. It also includes hooks (a
+`UserPromptSubmit` hook sees the prompt), MCP servers, plugins, skills, and
+`CLAUDE.md` files from the working directory and above.
 
-The result's `execution.isolationFlags` lists the isolation flags present in
-the argv that was spawned (`[]` by default, `["--safe-mode"]` in safe mode).
-Combine both options for a run that neither inherits ambient credentials nor
-loads the operator's configuration.
+`isolation: "safe-mode"` appends `--safe-mode --setting-sources ""`:
+
+| Flag | Disables |
+| --- | --- |
+| `--safe-mode` | `CLAUDE.md` files, hooks, MCP servers, skills, installed plugins, custom commands and agents, output styles. It does **not** stop settings files from applying their `env` block or `apiKeyHelper`. |
+| `--setting-sources ""` | Every user (`~/.claude/settings.json`), project (`.claude/settings.json`), and local (`.claude/settings.local.json`) settings file, including their `env` and `apiKeyHelper`. `local` would not be enough: it still loads `.claude/settings.local.json` from the working directory. |
+
+What still applies: subscription login (OAuth, including the macOS keychain),
+model selection, built-in permissions behaviour, admin-managed (policy)
+settings, which neither flag can disable, and the child's environment, which
+`environmentInheritance` controls.
+
+A gateway or API key configured only in a settings file is therefore **not**
+used under isolation. A host that needs one should put it in the environment
+(`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`) and name it in
+`environmentInheritance.allow`, or set it in the `environment` overlay.
+
+Verified against Claude Code 2.1.321 on macOS. The probe used a local HTTP
+listener, a throwaway `HOME` whose user settings set `ANTHROPIC_BASE_URL` to
+the listener and a synthetic `ANTHROPIC_API_KEY`, a second throwaway `HOME`
+using `apiKeyHelper`, and a working directory with project and local settings
+doing the same:
+
+| Run | Listener received the settings credential | Project `CLAUDE.md` and `UserPromptSubmit` hook | Subscription login with the real `HOME` |
+| --- | --- | --- | --- |
+| default flags | yes | applied | works |
+| `--safe-mode` | yes (`env` and `apiKeyHelper`) | not applied | works |
+| `--safe-mode --setting-sources local` | yes (local settings) | not applied | not tested |
+| `--safe-mode --setting-sources ""` | no | not applied | works |
+
+Claude Code rejects an unknown option and exits 1, so a CLI without these
+flags fails the invocation (`RUNTIME_FAILURE`) rather than running
+unisolated. `--bare` is not used because it never reads the subscription
+login.
+
+The result's `execution.isolationFlags` lists the isolation flags, with their
+values, present in the argv that was spawned: `[]` by default, or
+`["--safe-mode", "--setting-sources", ""]` in safe mode. Combine both options
+for a run that neither inherits ambient credentials nor loads the operator's
+configuration, and pass an abort signal (see the process transport's failure
+behaviour), because a run against an unreachable endpoint may never exit.
 
 ## Codex runtime
 
@@ -412,7 +448,7 @@ From `@kontourai/relay/runtime-profile`.
 | --- | --- | --- |
 | `profile`, `model` | all | Usually spread from `parseModelRuntimeProfile()`. |
 | `executable`, `cwd`, `environment`, `maxOutputBytes` | `claude-code`, `codex`, `opencode` | Forwarded to the runtime. |
-| `environmentInheritance`, `isolation` | `claude-code` | Forwarded to the runtime. Any other profile throws rather than ignoring them. |
+| `environmentInheritance`, `isolation` | `claude-code` | Forwarded to the runtime. Any other profile throws when either is set, even to a value that would change nothing (`isolation: "none"`, `{ inherit: "all" }`), so a host never believes an option applied where it did not. |
 | `allowPromptedStructuredOutput` | `opencode` | Required. Without it, construction throws. The runtime is always built with `structuredOutput: "prompted"`. |
 | `apiKey` | `anthropic` | Required. Without it, construction throws. The resolver never reads the environment. |
 | `baseUrl`, `maxRetries`, `timeoutMs` | `anthropic` | Forwarded to the runtime. |
