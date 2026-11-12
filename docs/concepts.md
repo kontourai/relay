@@ -243,6 +243,9 @@ sanitizing. A harness profile is a thin codec on top of it:
 
 The transport never interprets prompts, chooses a model, discovers
 credentials, or copies the constructor `environment` into results and errors.
+By default the child inherits the host's whole environment. An
+`environmentInheritance` allowlist limits it to a small platform base plus
+named variables, and each result's `execution` record says which applied.
 The Claude Code, Codex, and OpenCode runtimes are profiles built this way, and
 each declares only the capabilities its CLI can actually provide.
 

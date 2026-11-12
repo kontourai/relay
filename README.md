@@ -130,6 +130,24 @@ const localRuntime = createClaudeCodeRuntime({ model: "sonnet" });
 Authentication remains owned by the installed harness. Relay does not inspect,
 copy, or persist its credential configuration.
 
+By default the child inherits the host's whole environment and the CLI loads
+the operator's settings, hooks, MCP servers, and `CLAUDE.md` files. A host that
+sends sensitive content should opt out of both:
+
+```ts
+const isolatedRuntime = createClaudeCodeRuntime({
+  model: "sonnet",
+  // Only PATH, HOME, USER, and TMPDIR (or the Windows equivalents), plus names you list.
+  environmentInheritance: { inherit: "allowlist", allow: [] },
+  // Adds --safe-mode: no hooks, MCP servers, or CLAUDE.md; subscription login still works.
+  isolation: "safe-mode",
+});
+```
+
+Name a gateway or key in `allow` (for example `ANTHROPIC_BASE_URL`) when the
+run should use it. Each result's `execution` record lists the variable names
+the child received and the isolation flags that were passed.
+
 Claude Code does not currently expose a per-invocation output-token ceiling
 through this profile, so it reports `outputTokenLimitFidelity: "unavailable"`.
 When the CLI reports more output tokens than requested, Relay returns

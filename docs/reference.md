@@ -42,7 +42,9 @@ Exported as types from `@kontourai/relay`.
 | `ModelMessageContentPart` | `{ type: "text", text }`, `{ type: "tool-call", id, name, input }`, or `{ type: "tool-result", id, name, output, isError? }` |
 | `ModelTool` | `name`, optional `description`, `inputSchema` |
 | `ModelToolChoice` | `{ type: "auto" }`, `{ type: "required" }`, or `{ type: "tool", name }` |
-| `ModelInvocationResult` | `provider`, `model`, `modelSource?`, `outputText`, `toolCalls`, `usage`, `latencyMs`, `stopReason?`, `warnings?` |
+| `ModelInvocationResult` | `provider`, `model`, `modelSource?`, `outputText`, `toolCalls`, `usage`, `latencyMs`, `stopReason?`, `warnings?`, `execution?` |
+| `ModelExecutionRecord` | Optional `environment: ModelExecutionEnvironment` and `isolationFlags: string[]`. Set by process-backed runtimes from what they actually passed to the child. |
+| `ModelExecutionEnvironment` | `{ inherit: "all" }` or `{ inherit: "allowlist", names }`: the variable names the child received, never their values |
 | `ModelSource` | `"provider-reported"` or `"configured"` |
 | `ModelToolCall` | `id`, `name`, `input` |
 | `ModelUsage` | Optional `inputTokens`, `outputTokens`, `totalTokens`, `cacheReadTokens`, `cacheWriteTokens`, `costUsd` |
@@ -162,11 +164,62 @@ when the first two checks pass.
 | `capabilities` | The declaration returned by `capabilities()`. |
 | `codec` | A `ProcessRuntimeCodec`: `prepare(request)` returns `{ args, stdin? }`; `parse(output, request)` returns a result; optional `classifyFailure(output, request)` returns a `ModelInvocationError` for a nonzero exit. |
 | `cwd` | Working directory for the child process. |
-| `environment` | Variables added on top of the parent's `process.env` for the child. Never copied into results or errors. |
+| `environment` | Variables added on top of the inherited environment for the child. A name set to `undefined` removes it. Never copied into results or errors. |
+| `environmentInheritance` | `{ inherit: "all" }` (default) copies the parent's whole `process.env`. `{ inherit: "allowlist", allow }` copies only the platform base and the names in `allow`. See [Child environment](#child-environment). |
 | `maxOutputBytes` | Combined stdout and stderr limit. Default 8 MiB. |
 | `now` | Clock for `latencyMs`. Default `performance.now()`. |
 
 The `output` passed to the codec is `{ stdout, stderr, exitCode, latencyMs }`.
+`parse()` also receives the `{ args, stdin }` the transport spawned, so a
+profile can report evidence derived from what it actually passed.
+
+Every result from the transport carries `execution.environment`, recording how
+the child's environment was built. With an allowlist it lists the names the
+child received; values are never recorded.
+
+### Child environment
+
+By default the child inherits the parent's whole environment, so an ambient
+API key, token, or base URL in the host's shell reaches the harness. A stray
+`ANTHROPIC_BASE_URL` can send prompts to another endpoint, and a stray API key
+can switch a subscription login to API billing. Hosts that send sensitive
+content through a harness should use an allowlist:
+
+```ts
+createClaudeCodeRuntime({
+  model: "sonnet",
+  environmentInheritance: { inherit: "allowlist", allow: [] },
+});
+```
+
+An allowlisted child receives only these variables from the parent, when they
+are set, plus the names in `allow`, plus the `environment` overlay:
+
+| Platform | Base | Why |
+| --- | --- | --- |
+| macOS, Linux | `PATH` | Resolves the harness's interpreter and subprocesses. |
+| | `HOME` | Where harnesses keep their login and configuration. |
+| | `USER` | On macOS, Claude Code finds its subscription login in the keychain by user name. Without it the CLI reports that it is not logged in. |
+| | `TMPDIR` | Keeps temporary files in the per-user directory instead of a shared `/tmp`. |
+| Windows | `PATH`, `PATHEXT` | Command resolution. |
+| | `SystemRoot` | Required by system libraries, including networking. |
+| | `USERPROFILE`, `USERNAME`, `APPDATA`, `LOCALAPPDATA` | Home, user, and per-user configuration. |
+| | `TEMP`, `TMP` | Temporary files. |
+
+Names match exactly, except on Windows, where they match case-insensitively.
+`PROCESS_ENVIRONMENT_BASE` exports the lists, and
+`buildProcessEnvironment({ parent, overlay?, inheritance?, platform? })`
+returns the environment the transport would spawn with. Anything else the
+harness needs is named in `allow`. That includes a gateway
+(`ANTHROPIC_BASE_URL`), an API key (`ANTHROPIC_API_KEY`), a cloud provider
+switch such as `CLAUDE_CODE_USE_BEDROCK`, proxy settings (`HTTPS_PROXY`), or
+certificate bundles (`NODE_EXTRA_CA_CERTS`). Nothing is stripped without a way
+to opt back in. The operating system may add variables of its own when the
+child starts (macOS adds `__CF_USER_TEXT_ENCODING`). These are not in the
+record, because Relay did not pass them.
+
+An `allow` entry that is empty or contains `=`, or any other `inherit` value,
+throws a `TypeError` at construction.
 
 Failure behaviour:
 
@@ -191,7 +244,8 @@ Failure behaviour:
 | --- | --- |
 | `model` | Passed to `--model`. Required. |
 | `executable` | Default `claude`. |
-| `cwd`, `environment`, `maxOutputBytes` | As for the process transport. |
+| `cwd`, `environment`, `environmentInheritance`, `maxOutputBytes` | As for the process transport. |
+| `isolation` | `"none"` (default) or `"safe-mode"`. See below. |
 
 It runs `claude --print --output-format json --model <model>
 --no-session-persistence --tools "" --permission-mode dontAsk`, adding
@@ -207,8 +261,27 @@ descriptions.
 - `outputTokenLimitFidelity` is `unavailable`. When the CLI reports more output
   tokens than `maxOutputTokens`, the result carries the warning
   `OUTPUT_TOKEN_LIMIT_NOT_ENFORCED: requested <n>, observed <m>`.
-- `createClaudeCodeCodec(model)` is exported for profile conformance fixtures.
-  Applications should construct the runtime.
+- `createClaudeCodeCodec(model, { isolation? })` is exported for profile
+  conformance fixtures. Applications should construct the runtime.
+
+By default the CLI loads the operator's whole configuration: settings, hooks
+(a `UserPromptSubmit` hook sees the prompt), MCP servers, plugins, skills, and
+`CLAUDE.md` files from the working directory and above. `isolation:
+"safe-mode"` appends `--safe-mode`, which disables those customizations while
+subscription login, model selection, and permissions work normally.
+Admin-managed (policy) settings still apply. Verified against Claude Code
+2.1.321: with a project `CLAUDE.md` and a project `UserPromptSubmit` hook in
+the working directory, a default run followed the `CLAUDE.md` and fired the
+hook, and a `--safe-mode` run did neither and still authenticated with the
+subscription login. Claude Code rejects an unknown option and exits 1, so a
+CLI without the flag fails the invocation (`RUNTIME_FAILURE`) rather than
+running unisolated. `--bare` is not used because it never reads
+the subscription login.
+
+The result's `execution.isolationFlags` lists the isolation flags present in
+the argv that was spawned (`[]` by default, `["--safe-mode"]` in safe mode).
+Combine both options for a run that neither inherits ambient credentials nor
+loads the operator's configuration.
 
 ## Codex runtime
 
@@ -339,6 +412,7 @@ From `@kontourai/relay/runtime-profile`.
 | --- | --- | --- |
 | `profile`, `model` | all | Usually spread from `parseModelRuntimeProfile()`. |
 | `executable`, `cwd`, `environment`, `maxOutputBytes` | `claude-code`, `codex`, `opencode` | Forwarded to the runtime. |
+| `environmentInheritance`, `isolation` | `claude-code` | Forwarded to the runtime. Any other profile throws rather than ignoring them. |
 | `allowPromptedStructuredOutput` | `opencode` | Required. Without it, construction throws. The runtime is always built with `structuredOutput: "prompted"`. |
 | `apiKey` | `anthropic` | Required. Without it, construction throws. The resolver never reads the environment. |
 | `baseUrl`, `maxRetries`, `timeoutMs` | `anthropic` | Forwarded to the runtime. |

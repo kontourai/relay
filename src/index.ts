@@ -5,7 +5,7 @@ export { RecordingModelRuntime, ReplayModelRuntime } from "./replay.js";
 export { ModelInvocationError } from "./types.js";
 export type {
   JsonSchema, ModelBatchInvocationOutcome, ModelInvocationErrorCode, ModelInvocationFailure, ModelInvocationOptions,
-  ModelInvocationRequest, ModelInvocationResult, ModelMessage, ModelMessageContentPart, ModelRuntime,
+  ModelExecutionEnvironment, ModelExecutionRecord, ModelInvocationRequest, ModelInvocationResult, ModelMessage, ModelMessageContentPart, ModelRuntime,
   ModelRuntimeCapabilities, ModelSource, ModelTool, ModelToolCall, ModelToolChoice, ModelUsage,
 } from "./types.js";
 export type { InvocationReplayRecord } from "./replay.js";

@@ -1,13 +1,35 @@
 import { ModelInvocationError, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime, type ModelTool } from "./types.js";
 import { classifyAuthOrLimit, detectUsageLimit, toolDescriptionLines } from "./harness-text.js";
-import { createProcessRuntime, type ProcessInvocation, type ProcessInvocationOutput, type ProcessRuntimeCodec } from "./process.js";
+import { createProcessRuntime, type ProcessEnvironmentInheritance, type ProcessInvocation, type ProcessInvocationOutput, type ProcessRuntimeCodec } from "./process.js";
+
+/**
+ * `safe-mode` passes `--safe-mode`, which starts Claude Code with CLAUDE.md
+ * files, hooks, MCP servers, skills, installed plugins, and custom commands and
+ * agents disabled, while subscription login, model selection, and permissions
+ * work normally. Admin-managed (policy) settings still apply.
+ */
+export type ClaudeCodeIsolation = "none" | "safe-mode";
+
+const ISOLATION_FLAGS: Readonly<Record<ClaudeCodeIsolation, readonly string[]>> = Object.freeze({
+  none: Object.freeze([]),
+  "safe-mode": Object.freeze(["--safe-mode"]),
+});
+const KNOWN_ISOLATION_FLAGS = new Set(Object.values(ISOLATION_FLAGS).flat());
 
 export interface ClaudeCodeRuntimeOptions {
   model: string;
   executable?: string;
   cwd?: string;
   environment?: Readonly<NodeJS.ProcessEnv>;
+  /** As for the process transport. Default `{ inherit: "all" }`. */
+  environmentInheritance?: ProcessEnvironmentInheritance;
+  /** Default `"none"`: the CLI loads the operator's full configuration. */
+  isolation?: ClaudeCodeIsolation;
   maxOutputBytes?: number;
+}
+
+export interface ClaudeCodeCodecOptions {
+  isolation?: ClaudeCodeIsolation;
 }
 
 interface ClaudeCodeJsonResult {
@@ -39,15 +61,20 @@ export function createClaudeCodeRuntime(options: ClaudeCodeRuntimeOptions): Mode
       abort: true,
       usage: true,
     },
-    codec: createClaudeCodeCodec(options.model),
+    codec: createClaudeCodeCodec(options.model, options.isolation ? { isolation: options.isolation } : {}),
     ...(options.cwd ? { cwd: options.cwd } : {}),
     ...(options.environment ? { environment: options.environment } : {}),
+    ...(options.environmentInheritance ? { environmentInheritance: options.environmentInheritance } : {}),
     ...(options.maxOutputBytes ? { maxOutputBytes: options.maxOutputBytes } : {}),
   });
 }
 
 /** Public for profile conformance fixtures; applications should construct the runtime. */
-export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
+export function createClaudeCodeCodec(model: string, codecOptions: ClaudeCodeCodecOptions = {}): ProcessRuntimeCodec {
+  const isolation = codecOptions.isolation ?? "none";
+  if (!Object.hasOwn(ISOLATION_FLAGS, isolation)) {
+    throw new TypeError(`Unknown Claude Code isolation: ${String(isolation)}`);
+  }
   return {
     prepare(request): ProcessInvocation {
       const forcedTool = resolveForcedTool(request);
@@ -58,11 +85,12 @@ export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
         "--no-session-persistence",
         "--tools", "",
         "--permission-mode", "dontAsk",
+        ...ISOLATION_FLAGS[isolation],
       ];
       if (forcedTool) args.push("--json-schema", JSON.stringify(forcedTool.inputSchema));
       return { args, stdin: serializeMessages(request, forcedTool) };
     },
-    parse(output, request): ModelInvocationResult {
+    parse(output, request, invocation): ModelInvocationResult {
       const parsed = parseJsonResult(output.stdout);
       if (parsed.is_error === true) {
         throw authOrLimit(output)
@@ -101,6 +129,13 @@ export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
         latencyMs: output.latencyMs,
         ...(typeof parsed.stop_reason === "string" ? { stopReason: parsed.stop_reason } : {}),
         ...(warnings.length ? { warnings: Object.freeze(warnings) } : {}),
+        // Derived from the argv the transport spawned, not from the configured
+        // option; without that argv there is nothing to report.
+        ...(invocation ? {
+          execution: Object.freeze({
+            isolationFlags: Object.freeze(invocation.args.filter((arg) => KNOWN_ISOLATION_FLAGS.has(arg))),
+          }),
+        } : {}),
       });
     },
     classifyFailure(output) {

@@ -1,8 +1,9 @@
 import type { ModelRuntime } from "./types.js";
 import { createAnthropicRuntime } from "./anthropic.js";
-import { createClaudeCodeRuntime } from "./claude-code.js";
+import { createClaudeCodeRuntime, type ClaudeCodeIsolation } from "./claude-code.js";
 import { createCodexRuntime } from "./codex.js";
 import { createOpenCodeRuntime } from "./opencode.js";
+import type { ProcessEnvironmentInheritance } from "./process.js";
 
 export const MODEL_RUNTIME_PROFILES = ["claude-code", "codex", "opencode", "anthropic"] as const;
 export type ModelRuntimeProfile = (typeof MODEL_RUNTIME_PROFILES)[number];
@@ -17,6 +18,10 @@ export interface CreateModelRuntimeProfileOptions extends ModelRuntimeProfileSpe
   executable?: string;
   cwd?: string;
   environment?: Readonly<NodeJS.ProcessEnv>;
+  /** Claude Code profile only, for now; other profiles reject it. */
+  environmentInheritance?: ProcessEnvironmentInheritance;
+  /** Claude Code profile only; other profiles reject it. */
+  isolation?: ClaudeCodeIsolation;
   maxOutputBytes?: number;
   allowPromptedStructuredOutput?: boolean;
   apiKey?: string;
@@ -45,8 +50,17 @@ export function createModelRuntimeProfile(options: CreateModelRuntimeProfileOpti
     ...(options.environment ? { environment: options.environment } : {}),
     ...(options.maxOutputBytes ? { maxOutputBytes: options.maxOutputBytes } : {}),
   };
+  if (options.profile !== "claude-code") {
+    // Silently ignoring these would let a host believe a run was isolated when it was not.
+    if (options.environmentInheritance !== undefined) throw new Error(`${options.profile} profile does not support environmentInheritance`);
+    if (options.isolation !== undefined) throw new Error(`${options.profile} profile does not support isolation`);
+  }
   switch (options.profile) {
-    case "claude-code": return createClaudeCodeRuntime(processOptions);
+    case "claude-code": return createClaudeCodeRuntime({
+      ...processOptions,
+      ...(options.environmentInheritance ? { environmentInheritance: options.environmentInheritance } : {}),
+      ...(options.isolation ? { isolation: options.isolation } : {}),
+    });
     case "codex": return createCodexRuntime(processOptions);
     case "opencode":
       if (!options.allowPromptedStructuredOutput) throw new Error("opencode structured tools require explicit prompted-output opt-in");
