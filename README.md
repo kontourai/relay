@@ -157,9 +157,13 @@ isolation. Put
 it in the environment and name it in `allow` (for example
 `ANTHROPIC_BASE_URL`) when the run should use it. Relay has no default timeout,
 and a run against an unreachable endpoint may never exit, so unattended hosts
-should pass an abort signal. On macOS and Linux an abort terminates the
-harness's whole process group (`SIGTERM`, then `SIGKILL` after 2 s); on Windows
-only the direct child is terminated. Each result's `execution` record lists the
+should pass an abort signal. An abort sends `SIGTERM` to the harness, then
+`SIGKILL` after 2 s. By default the harness stays in the host's process group,
+so a terminal Ctrl-C reaches it, and only the direct child is signalled.
+Unattended hosts on macOS or Linux can pass `processGroup: "isolated"` so an
+abort stops the whole process tree. An isolated group no longer receives
+Ctrl-C, and it can outlive a host that is killed by a signal it does not
+handle. Each result's `execution` record lists the
 variable names the child received and the isolation flags that were passed.
 See the [reference](docs/reference.md#claude-code-runtime) for exactly what
 each flag disables.

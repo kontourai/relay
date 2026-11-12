@@ -3,7 +3,7 @@ import { createAnthropicRuntime } from "./anthropic.js";
 import { createClaudeCodeRuntime, type ClaudeCodeIsolation } from "./claude-code.js";
 import { createCodexRuntime } from "./codex.js";
 import { createOpenCodeRuntime } from "./opencode.js";
-import type { ProcessEnvironmentInheritance } from "./process.js";
+import type { ProcessEnvironmentInheritance, ProcessGroupMode } from "./process.js";
 
 export const MODEL_RUNTIME_PROFILES = ["claude-code", "codex", "opencode", "anthropic"] as const;
 export type ModelRuntimeProfile = (typeof MODEL_RUNTIME_PROFILES)[number];
@@ -22,6 +22,8 @@ export interface CreateModelRuntimeProfileOptions extends ModelRuntimeProfileSpe
   environmentInheritance?: ProcessEnvironmentInheritance;
   /** Claude Code profile only; other profiles reject it. */
   isolation?: ClaudeCodeIsolation;
+  /** Claude Code profile only, for now; other profiles reject it. */
+  processGroup?: ProcessGroupMode;
   maxOutputBytes?: number;
   allowPromptedStructuredOutput?: boolean;
   apiKey?: string;
@@ -54,12 +56,14 @@ export function createModelRuntimeProfile(options: CreateModelRuntimeProfileOpti
     // Silently ignoring these would let a host believe a run was isolated when it was not.
     if (options.environmentInheritance !== undefined) throw new Error(`${options.profile} profile does not support environmentInheritance`);
     if (options.isolation !== undefined) throw new Error(`${options.profile} profile does not support isolation`);
+    if (options.processGroup !== undefined) throw new Error(`${options.profile} profile does not support processGroup`);
   }
   switch (options.profile) {
     case "claude-code": return createClaudeCodeRuntime({
       ...processOptions,
       ...(options.environmentInheritance ? { environmentInheritance: options.environmentInheritance } : {}),
       ...(options.isolation ? { isolation: options.isolation } : {}),
+      ...(options.processGroup ? { processGroup: options.processGroup } : {}),
     });
     case "codex": return createCodexRuntime(processOptions);
     case "opencode":

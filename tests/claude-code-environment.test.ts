@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -69,19 +70,37 @@ async function readDump(dumpPath: string): Promise<Dump | undefined> {
 
 // Starts a hung fake in `mode`, aborts it once it has recorded its process ids,
 // and returns those ids after the invocation settled.
-async function abortHung(mode: string): Promise<Dump> {
-  const dumpPath = path.join(directory, `dump-${mode}.json`);
+// The process group a live process belongs to, as the operating system reports it.
+function processGroupOf(pid: number): number {
+  return Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).trim());
+}
+
+async function abortHung(
+  mode: string,
+  processGroup?: "shared" | "isolated",
+  whileRunning?: (dump: Dump) => void,
+): Promise<Dump> {
+  const dumpPath = path.join(directory, `dump-${mode}-${processGroup ?? "default"}-${Math.random().toString(36).slice(2)}.json`);
   const controller = new AbortController();
   const pending = createClaudeCodeRuntime({
     model: "sonnet", executable, isolation: "safe-mode",
+    ...(processGroup ? { processGroup } : {}),
     environment: { RELAY_FAKE_DUMP: dumpPath, RELAY_FAKE_HANG: mode },
   }).invoke(request, { signal: controller.signal });
   let dump: Dump | undefined;
   assert.ok(await waitUntil(async () => (dump = await readDump(dumpPath)) !== undefined, 10_000), "fake never started");
   started.add(dump!.pid);
   if (dump!.grandchildPid) started.add(dump!.grandchildPid);
+  let callbackError: unknown;
+  try {
+    whileRunning?.(dump!);
+  } catch (error) {
+    callbackError = error;
+  }
+  // Always abort and settle the invocation, so a failed check leaves nothing pending.
   controller.abort();
   await assert.rejects(pending, (error: unknown) => error instanceof ModelInvocationError && error.code === "ABORTED");
+  if (callbackError !== undefined) throw callbackError;
   return dump!;
 }
 
@@ -137,7 +156,7 @@ describe("Claude Code child environment and isolation", () => {
     for (const [name, value] of Object.entries(planted)) assert.equal(dump.env[name], value, name);
     for (const name of Object.keys(process.env)) assert.ok(name in dump.env, name);
     assert.deepEqual(dump.argv, defaultArgs);
-    assert.deepEqual(result.execution, { isolationFlags: [], environment: { inherit: "all" } });
+    assert.deepEqual(result.execution, { isolationFlags: [], environment: { inherit: "all" }, processGroup: "shared" });
     // A completed child does not outlive the invocation, process group or not.
     assert.equal(alive(dump.pid), false);
   });
@@ -205,9 +224,53 @@ describe("Claude Code child environment and isolation", () => {
     }
   });
 
-  it("kills the processes a hung child started when the caller aborts", { skip: process.platform === "win32", timeout: 30_000 }, async () => {
+  it("keeps the child in the host's process group by default", { skip: process.platform === "win32", timeout: 30_000 }, async () => {
     try {
-      const { pid, grandchildPid } = await abortHung("grandchild");
+      let childGroup = 0;
+      const { pid } = await abortHung("hang", undefined, (dump) => { childGroup = processGroupOf(dump.pid); });
+      // Same group as the host, so a terminal Ctrl-C reaches it.
+      assert.equal(childGroup, processGroupOf(process.pid));
+      assert.notEqual(childGroup, pid);
+    } finally {
+      killLeftovers();
+    }
+  });
+
+  for (const processGroup of ["shared", "isolated"] as const) {
+    it(`escalates to SIGKILL when a child ignores SIGTERM (${processGroup})`, { skip: process.platform === "win32", timeout: 30_000 }, async () => {
+      try {
+        const { pid } = await abortHung("ignore-term", processGroup);
+        // Bounded well beyond the grace period; only SIGKILL can end this child.
+        assert.ok(await waitUntil(() => !alive(pid), PROCESS_TERMINATION_GRACE_MS + 8_000), "SIGTERM-ignoring child still running after the grace period");
+      } finally {
+        killLeftovers();
+      }
+    });
+  }
+
+  it("records the process group the child was spawned with", async () => {
+    const shared = await run();
+    assert.equal(shared.result.execution?.processGroup, "shared");
+    if (process.platform !== "win32") {
+      const isolated = await run({ processGroup: "isolated" });
+      assert.equal(isolated.result.execution?.processGroup, "isolated");
+    }
+  });
+
+  it("isolated: the child leads its own process group", { skip: process.platform === "win32", timeout: 30_000 }, async () => {
+    try {
+      let childGroup = 0;
+      const { pid } = await abortHung("hang", "isolated", (dump) => { childGroup = processGroupOf(dump.pid); });
+      assert.equal(childGroup, pid);
+      assert.notEqual(childGroup, processGroupOf(process.pid));
+    } finally {
+      killLeftovers();
+    }
+  });
+
+  it("isolated: kills the processes a hung child started when the caller aborts", { skip: process.platform === "win32", timeout: 30_000 }, async () => {
+    try {
+      const { pid, grandchildPid } = await abortHung("grandchild", "isolated");
       assert.ok(grandchildPid, "fake did not start a grandchild");
       assert.ok(await waitUntil(() => !alive(pid) && !alive(grandchildPid), 10_000), "child or grandchild still running after abort");
     } finally {
@@ -215,24 +278,14 @@ describe("Claude Code child environment and isolation", () => {
     }
   });
 
-  it("escalates to SIGKILL when a child ignores SIGTERM", { skip: process.platform === "win32", timeout: 30_000 }, async () => {
-    try {
-      const { pid } = await abortHung("ignore-term");
-      // Bounded well beyond the grace period; only SIGKILL can end this child.
-      assert.ok(await waitUntil(() => !alive(pid), PROCESS_TERMINATION_GRACE_MS + 8_000), "SIGTERM-ignoring child still running after the grace period");
-    } finally {
-      killLeftovers();
-    }
-  });
-
-  it("kills a still-running child group when the host exits normally", { skip: process.platform === "win32", timeout: 30_000 }, async () => {
+  it("isolated: kills a still-running child group when the host exits normally", { skip: process.platform === "win32", timeout: 30_000 }, async () => {
     const dumpPath = path.join(directory, "dump-host-exit.json");
     const host = path.join(directory, "host.mjs");
     const moduleUrl = new URL("../src/claude-code.js", import.meta.url).href;
     await writeFile(host, `
 import { createClaudeCodeRuntime } from ${JSON.stringify(moduleUrl)};
 import { existsSync } from "node:fs";
-createClaudeCodeRuntime({ model: "sonnet", executable: ${JSON.stringify(executable)},
+createClaudeCodeRuntime({ model: "sonnet", executable: ${JSON.stringify(executable)}, processGroup: "isolated",
   environment: { RELAY_FAKE_DUMP: ${JSON.stringify(dumpPath)}, RELAY_FAKE_HANG: "grandchild" } })
   .invoke({ messages: [{ role: "user", content: "x" }] }).catch(() => undefined);
 const timer = setInterval(() => { if (existsSync(${JSON.stringify(dumpPath)})) { clearInterval(timer); process.exit(0); } }, 25);
@@ -266,6 +319,7 @@ const timer = setInterval(() => { if (existsSync(${JSON.stringify(dumpPath)})) {
     assert.throws(build({ environmentInheritance: { inherit: "allowlist" } }), TypeError);
     assert.throws(build({ environmentInheritance: { inherit: "none" } }), TypeError);
     assert.throws(build({ isolation: "bare" }), TypeError);
+    assert.throws(build({ processGroup: "detached" }), TypeError);
   });
 
   it("forwards both options through the claude-code profile and refuses them elsewhere", async () => {
@@ -283,6 +337,7 @@ const timer = setInterval(() => { if (existsSync(${JSON.stringify(dumpPath)})) {
     assert.deepEqual(dump.argv, [...defaultArgs, ...safeModeFlags]);
     assert.deepEqual(result.execution?.isolationFlags, safeModeFlags);
     assert.throws(() => createModelRuntimeProfile({ profile: "codex", model: "gpt-5", isolation: "safe-mode" }), /does not support isolation/);
+    assert.throws(() => createModelRuntimeProfile({ profile: "codex", model: "gpt-5", processGroup: "isolated" }), /does not support processGroup/);
     assert.throws(() => createModelRuntimeProfile({
       profile: "opencode", model: "zai/glm-5", allowPromptedStructuredOutput: true,
       environmentInheritance: { inherit: "allowlist", allow: [] },

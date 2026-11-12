@@ -38,9 +38,31 @@ export interface ProcessRuntimeOptions {
    * applied. Default `{ inherit: "all" }`. See `ProcessEnvironmentInheritance`.
    */
   environmentInheritance?: ProcessEnvironmentInheritance;
+  /**
+   * `shared` (default) keeps the child in the host's process group, so a
+   * terminal Ctrl-C reaches it. `isolated` (POSIX only) makes the child lead its
+   * own group so termination also reaches the processes it started. See
+   * `ProcessGroupMode`.
+   */
+  processGroup?: ProcessGroupMode;
   maxOutputBytes?: number;
   now?: () => number;
 }
+
+/**
+ * How the child is placed relative to the host's process group.
+ * - `shared`: the child stays in the host's group, as in Relay 0.7. A terminal
+ *   Ctrl-C reaches it. Termination signals the direct child only, so processes
+ *   it started may keep running.
+ * - `isolated`: the child is spawned `detached` and leads its own group.
+ *   Termination signals the whole group. The group no longer receives a
+ *   terminal Ctrl-C; Relay kills groups still running when the host exits
+ *   normally, but a host killed by a signal it does not handle (including
+ *   Node's default Ctrl-C handling) can leave the group running. Meant for
+ *   unattended hosts. Not supported on Windows, where `detached` opens a new
+ *   console instead; construction throws there.
+ */
+export type ProcessGroupMode = "shared" | "isolated";
 
 /**
  * `all` copies the parent's whole `process.env` (the historical behaviour).
@@ -137,6 +159,7 @@ interface CapturedProcess {
   stdout: string;
   stderr: string;
   exitCode: number;
+  processGroup: ProcessGroupMode;
 }
 
 const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -148,9 +171,8 @@ const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
  */
 export const PROCESS_TERMINATION_GRACE_MS = 2000;
 
-// On POSIX each child leads its own process group so termination reaches the
-// processes it started. A detached group no longer receives the terminal's
-// Ctrl-C, so groups still running when the host exits normally are killed here.
+// Isolated groups no longer receive the terminal's Ctrl-C, so groups still
+// running when the host exits normally are killed here.
 const liveGroups = new Set<number>();
 let exitHookInstalled = false;
 function trackGroup(pid: number): void {
@@ -172,15 +194,19 @@ function signalGroup(pid: number, signal: NodeJS.Signals): boolean {
 }
 
 /**
- * POSIX: `SIGTERM` to the whole process group, then `SIGKILL` to whatever is
- * left after `PROCESS_TERMINATION_GRACE_MS`. Windows: only the direct child is
- * terminated; processes it started are not (Relay does not shell out to
- * `taskkill`).
+ * `SIGTERM`, then `SIGKILL` to whatever is left after
+ * `PROCESS_TERMINATION_GRACE_MS`: to the whole group when it is isolated,
+ * otherwise to the direct child only (Relay does not shell out to `taskkill`).
  */
 function terminate(child: ChildProcess, grouped: boolean): void {
   const pid = child.pid;
-  if (!grouped || pid === undefined) {
+  if (pid === undefined) return; // Never started; nothing to terminate.
+  if (!grouped) {
     child.kill("SIGTERM");
+    const escalate = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }, PROCESS_TERMINATION_GRACE_MS);
+    escalate.unref();
     return;
   }
   if (!signalGroup(pid, "SIGTERM")) {
@@ -201,6 +227,13 @@ function terminate(child: ChildProcess, grouped: boolean): void {
  */
 export function createProcessRuntime(options: ProcessRuntimeOptions): ModelRuntime {
   validateInheritance(options.environmentInheritance);
+  const processGroup = options.processGroup ?? "shared";
+  if (processGroup !== "shared" && processGroup !== "isolated") {
+    throw new TypeError("processGroup must be \"shared\" or \"isolated\"");
+  }
+  if (processGroup === "isolated" && process.platform === "win32") {
+    throw new TypeError("processGroup \"isolated\" is not supported on Windows");
+  }
   const inheritance = options.environmentInheritance
     ? Object.freeze(options.environmentInheritance.inherit === "all"
       ? { inherit: "all" as const }
@@ -232,10 +265,12 @@ export function createProcessRuntime(options: ProcessRuntimeOptions): ModelRunti
         invocation,
         ...(options.cwd ? { cwd: options.cwd } : {}),
         environment,
+        processGroup,
         maxOutputBytes: options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
         ...(invocationOptions?.signal ? { signal: invocationOptions.signal } : {}),
       });
-      const normalized = { ...output, latencyMs: Math.max(0, now() - started) };
+      const { processGroup: spawnedGroup, ...captured } = output;
+      const normalized = { ...captured, latencyMs: Math.max(0, now() - started) };
       if (normalized.exitCode !== 0) {
         try {
           throw options.codec.classifyFailure?.(normalized, request) ?? classifyExit(normalized.exitCode);
@@ -253,7 +288,11 @@ export function createProcessRuntime(options: ProcessRuntimeOptions): ModelRunti
       }
       return Object.freeze({
         ...result,
-        execution: Object.freeze({ ...result.execution, environment: environmentRecord(inheritance, environment) }),
+        execution: Object.freeze({
+          ...result.execution,
+          environment: environmentRecord(inheritance, environment),
+          processGroup: spawnedGroup,
+        }),
       });
     },
   };
@@ -264,18 +303,20 @@ async function executeProcess(input: {
   invocation: ProcessInvocation;
   cwd?: string;
   environment: NodeJS.ProcessEnv;
+  processGroup: ProcessGroupMode;
   maxOutputBytes: number;
   signal?: AbortSignal;
 }): Promise<CapturedProcess> {
   return new Promise((resolve, reject) => {
-    const grouped = process.platform !== "win32";
-    const child = spawn(input.executable, [...input.invocation.args], {
+    const spawnOptions = {
       ...(input.cwd ? { cwd: input.cwd } : {}),
       env: input.environment,
-      stdio: ["pipe", "pipe", "pipe"],
-      // On Windows `detached` opens a new console instead of a process group.
-      detached: grouped,
-    });
+      stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
+      detached: input.processGroup === "isolated",
+    };
+    const child = spawn(input.executable, [...input.invocation.args], spawnOptions);
+    // Derived from the option the child was actually spawned with.
+    const grouped = spawnOptions.detached;
     if (grouped && child.pid !== undefined) trackGroup(child.pid);
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
@@ -323,6 +364,7 @@ async function executeProcess(input: {
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),
         exitCode: code ?? 1,
+        processGroup: grouped ? "isolated" : "shared",
       });
     });
     child.stdin.on("error", () => undefined);

@@ -43,7 +43,7 @@ Exported as types from `@kontourai/relay`.
 | `ModelTool` | `name`, optional `description`, `inputSchema` |
 | `ModelToolChoice` | `{ type: "auto" }`, `{ type: "required" }`, or `{ type: "tool", name }` |
 | `ModelInvocationResult` | `provider`, `model`, `modelSource?`, `outputText`, `toolCalls`, `usage`, `latencyMs`, `stopReason?`, `warnings?`, `execution?` |
-| `ModelExecutionRecord` | Optional `environment: ModelExecutionEnvironment` and `isolationFlags: string[]`. Set by process-backed runtimes from what they actually passed to the child. SDK runtimes leave it absent; `ReplayModelRuntime` and `FakeModelRuntime` return the recorded or supplied result as is, including this field. |
+| `ModelExecutionRecord` | Optional `environment: ModelExecutionEnvironment`, `isolationFlags: string[]`, and `processGroup: "shared" \| "isolated"` (from the `detached` option the child was actually spawned with). Set by process-backed runtimes from what they actually passed to the child. SDK runtimes leave it absent; `ReplayModelRuntime` and `FakeModelRuntime` return the recorded or supplied result as is, including this field. |
 | `ModelExecutionEnvironment` | `{ inherit: "all" }` or `{ inherit: "allowlist", names }`: the variable names the child received, never their values |
 | `ModelSource` | `"provider-reported"` or `"configured"` |
 | `ModelToolCall` | `id`, `name`, `input` |
@@ -165,6 +165,7 @@ when the first two checks pass.
 | `codec` | A `ProcessRuntimeCodec`: `prepare(request)` returns `{ args, stdin? }`; `parse(output, request)` returns a result; optional `classifyFailure(output, request)` returns a `ModelInvocationError` for a nonzero exit. |
 | `cwd` | Working directory for the child process. |
 | `environment` | Variables added on top of the inherited environment for the child. A name set to `undefined` removes it. Never copied into results or errors. |
+| `processGroup` | `"shared"` (default) or `"isolated"`. See the failure behaviour below. |
 | `environmentInheritance` | `{ inherit: "all" }` (default) copies the parent's whole `process.env`. `{ inherit: "allowlist", allow }` copies only the platform base and the names in `allow`. See [Child environment](#child-environment). |
 | `maxOutputBytes` | Combined stdout and stderr limit. Default 8 MiB. |
 | `now` | Clock for `latencyMs`. Default `performance.now()`. |
@@ -227,20 +228,27 @@ throws a `TypeError` at construction.
 Failure behaviour:
 
 - A signal that is already aborted, or aborts while the child runs, throws
-  `ABORTED` at once, and the child is terminated in the background:
-  - On macOS and Linux each child is spawned as the leader of its own process
-    group. Termination sends `SIGTERM` to the whole group, so the processes the
-    harness started are stopped too. Whatever is still running
-    `PROCESS_TERMINATION_GRACE_MS` (2000 ms) later is sent `SIGKILL`.
-  - On Windows only the direct child is terminated. Processes it started keep
-    running, because Relay does not shell out to `taskkill`.
-  - A child that exits normally is left alone, including any process it
-    deliberately left running.
-  - A process group no longer receives the terminal's Ctrl-C. Relay kills any
-    group still running when the host exits normally (`process.exit()` or an
-    empty event loop). A host killed by a signal it does not handle cannot run
-    that cleanup, so hosts that handle `SIGINT` or `SIGTERM` should abort their
-    invocations first.
+  `ABORTED` at once, and the child is terminated in the background. It is sent
+  `SIGTERM`, then `SIGKILL` if it is still running
+  `PROCESS_TERMINATION_GRACE_MS` (2000 ms) later. What receives the signals
+  depends on `processGroup`:
+  - `"shared"` (default): the child stays in the host's process group, as in
+    Relay 0.7, so a terminal Ctrl-C reaches it. Only the direct child is
+    signalled; processes it started may keep running.
+  - `"isolated"` (macOS and Linux only): the child is spawned `detached` and
+    leads its own process group. The whole group is signalled, so processes the
+    harness started are stopped too. The group no longer receives the
+    terminal's Ctrl-C. Relay kills groups still running when the host exits
+    normally (`process.exit()` or an empty event loop). **A host killed by a
+    signal it does not handle, including Node's default Ctrl-C handling, does
+    not run that cleanup and can leave the group running.** Use it for
+    unattended hosts, or abort invocations from your own signal handlers.
+    Construction throws on Windows, where `detached` opens a new console
+    instead of a process group.
+  - On Windows only the direct child is ever terminated. Relay does not shell
+    out to `taskkill`.
+  - A child that exits normally is left alone in both modes, including any
+    process it deliberately left running.
 - The transport has no timeout of its own. A harness that never answers (for
   example, one pointed at an unreachable endpoint) runs until the signal
   aborts. Unattended hosts should always pass one, such as
@@ -264,7 +272,7 @@ Failure behaviour:
 | --- | --- |
 | `model` | Passed to `--model`. Required. An empty id, or one starting with `-` (which the CLI would read as an option), throws a `TypeError` at construction. |
 | `executable` | Default `claude`. |
-| `cwd`, `environment`, `environmentInheritance`, `maxOutputBytes` | As for the process transport. |
+| `cwd`, `environment`, `environmentInheritance`, `processGroup`, `maxOutputBytes` | As for the process transport. |
 | `isolation` | `"none"` (default) or `"safe-mode"`. See below. |
 
 It runs `claude --print --output-format json --model <model>
@@ -472,7 +480,7 @@ From `@kontourai/relay/runtime-profile`.
 | --- | --- | --- |
 | `profile`, `model` | all | Usually spread from `parseModelRuntimeProfile()`. |
 | `executable`, `cwd`, `environment`, `maxOutputBytes` | `claude-code`, `codex`, `opencode` | Forwarded to the runtime. |
-| `environmentInheritance`, `isolation` | `claude-code` | Forwarded to the runtime. Any other profile throws when either is set, even to a value that would change nothing (`isolation: "none"`, `{ inherit: "all" }`), so a host never believes an option applied where it did not. |
+| `environmentInheritance`, `isolation`, `processGroup` | `claude-code` | Forwarded to the runtime. Any other profile throws when any of them is set, even to a value that would change nothing (`isolation: "none"`, `{ inherit: "all" }`), so a host never believes an option applied where it did not. |
 | `allowPromptedStructuredOutput` | `opencode` | Required. Without it, construction throws. The runtime is always built with `structuredOutput: "prompted"`. |
 | `apiKey` | `anthropic` | Required. Without it, construction throws. The resolver never reads the environment. |
 | `baseUrl`, `maxRetries`, `timeoutMs` | `anthropic` | Forwarded to the runtime. |

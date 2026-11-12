@@ -74,6 +74,8 @@ export interface ModelExecutionRecord {
   environment?: ModelExecutionEnvironment;
   /** Harness isolation flags present in the spawned argv, in argv order. */
   isolationFlags?: readonly string[];
+  /** Whether the child shared the host's process group or led its own (`detached`). */
+  processGroup?: "shared" | "isolated";
 }
 
 export interface ModelInvocationResult {

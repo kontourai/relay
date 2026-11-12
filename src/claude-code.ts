@@ -1,6 +1,6 @@
 import { ModelInvocationError, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime, type ModelTool } from "./types.js";
 import { classifyAuthOrLimit, detectUsageLimit, toolDescriptionLines } from "./harness-text.js";
-import { createProcessRuntime, type ProcessEnvironmentInheritance, type ProcessInvocation, type ProcessInvocationOutput, type ProcessRuntimeCodec } from "./process.js";
+import { createProcessRuntime, type ProcessEnvironmentInheritance, type ProcessGroupMode, type ProcessInvocation, type ProcessInvocationOutput, type ProcessRuntimeCodec } from "./process.js";
 
 /**
  * `safe-mode` passes `--safe-mode --setting-sources ""`.
@@ -46,6 +46,8 @@ export interface ClaudeCodeRuntimeOptions {
   environmentInheritance?: ProcessEnvironmentInheritance;
   /** Default `"none"`: the CLI loads the operator's full configuration. */
   isolation?: ClaudeCodeIsolation;
+  /** As for the process transport. Default `"shared"`. */
+  processGroup?: ProcessGroupMode;
   maxOutputBytes?: number;
 }
 
@@ -86,6 +88,7 @@ export function createClaudeCodeRuntime(options: ClaudeCodeRuntimeOptions): Mode
     ...(options.cwd ? { cwd: options.cwd } : {}),
     ...(options.environment ? { environment: options.environment } : {}),
     ...(options.environmentInheritance ? { environmentInheritance: options.environmentInheritance } : {}),
+    ...(options.processGroup ? { processGroup: options.processGroup } : {}),
     ...(options.maxOutputBytes ? { maxOutputBytes: options.maxOutputBytes } : {}),
   });
 }
