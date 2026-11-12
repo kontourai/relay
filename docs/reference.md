@@ -42,7 +42,9 @@ Exported as types from `@kontourai/relay`.
 | `ModelMessageContentPart` | `{ type: "text", text }`, `{ type: "tool-call", id, name, input }`, or `{ type: "tool-result", id, name, output, isError? }` |
 | `ModelTool` | `name`, optional `description`, `inputSchema` |
 | `ModelToolChoice` | `{ type: "auto" }`, `{ type: "required" }`, or `{ type: "tool", name }` |
-| `ModelInvocationResult` | `provider`, `model`, `modelSource?`, `outputText`, `toolCalls`, `usage`, `latencyMs`, `stopReason?`, `warnings?` |
+| `ModelInvocationResult` | `provider`, `model`, `modelSource?`, `outputText`, `toolCalls`, `usage`, `latencyMs`, `stopReason?`, `warnings?`, `execution?` |
+| `ModelExecutionRecord` | Optional `environment: ModelExecutionEnvironment`, `isolationFlags: string[]`, and `processGroup: "shared" \| "isolated"` (from the `detached` option the child was actually spawned with). Set by process-backed runtimes from what they actually passed to the child. SDK runtimes leave it absent; `ReplayModelRuntime` and `FakeModelRuntime` return the recorded or supplied result as is, including this field. |
+| `ModelExecutionEnvironment` | `{ inherit: "all" }` or `{ inherit: "allowlist", names }`: the variable names the child received, never their values |
 | `ModelSource` | `"provider-reported"` or `"configured"` |
 | `ModelToolCall` | `id`, `name`, `input` |
 | `ModelUsage` | Optional `inputTokens`, `outputTokens`, `totalTokens`, `cacheReadTokens`, `cacheWriteTokens`, `costUsd` |
@@ -162,16 +164,95 @@ when the first two checks pass.
 | `capabilities` | The declaration returned by `capabilities()`. |
 | `codec` | A `ProcessRuntimeCodec`: `prepare(request)` returns `{ args, stdin? }`; `parse(output, request)` returns a result; optional `classifyFailure(output, request)` returns a `ModelInvocationError` for a nonzero exit. |
 | `cwd` | Working directory for the child process. |
-| `environment` | Variables added on top of the parent's `process.env` for the child. Never copied into results or errors. |
+| `environment` | Variables added on top of the inherited environment for the child. A name set to `undefined` removes it. Never copied into results or errors. |
+| `processGroup` | `"shared"` (default) or `"isolated"`. See the failure behaviour below. |
+| `environmentInheritance` | `{ inherit: "all" }` (default) copies the parent's whole `process.env`. `{ inherit: "allowlist", allow }` copies only the platform base and the names in `allow`. See [Child environment](#child-environment). |
 | `maxOutputBytes` | Combined stdout and stderr limit. Default 8 MiB. |
 | `now` | Clock for `latencyMs`. Default `performance.now()`. |
 
 The `output` passed to the codec is `{ stdout, stderr, exitCode, latencyMs }`.
+`parse()` also receives the `{ args, stdin }` the transport spawned, so a
+profile can report evidence derived from what it actually passed.
+
+Every result from the transport carries `execution.environment`, recording how
+the child's environment was built. With an allowlist it lists the names the
+child received; values are never recorded.
+
+### Child environment
+
+By default the child inherits the parent's whole environment, so an ambient
+API key, token, or base URL in the host's shell reaches the harness. A stray
+`ANTHROPIC_BASE_URL` can send prompts to another endpoint, and a stray API key
+can switch a subscription login to API billing. Hosts that send sensitive
+content through a harness should use an allowlist:
+
+```ts
+createClaudeCodeRuntime({
+  model: "sonnet",
+  environmentInheritance: { inherit: "allowlist", allow: [] },
+});
+```
+
+An allowlisted child receives only these variables from the parent, when they
+are set, plus the names in `allow`, plus the `environment` overlay:
+
+| Platform | Base | Why |
+| --- | --- | --- |
+| macOS, Linux | `PATH` | Resolves the harness's interpreter and subprocesses. |
+| | `HOME` | Where harnesses keep their login and configuration. |
+| | `USER` | On macOS, Claude Code finds its subscription login in the keychain by user name. Without it the CLI reports that it is not logged in. |
+| | `TMPDIR` | Keeps temporary files in the per-user directory instead of a shared `/tmp`. |
+| Windows | `PATH`, `PATHEXT` | Command resolution. |
+| | `SystemRoot` | Required by system libraries, including networking. |
+| | `USERPROFILE`, `USERNAME`, `APPDATA`, `LOCALAPPDATA` | Home, user, and per-user configuration. |
+| | `TEMP`, `TMP` | Temporary files. |
+
+Names match exactly, except on Windows, where they match case-insensitively.
+On Windows an overlay name also replaces an inherited name that differs only
+in case (an overlay `PATH` replaces an inherited `Path`), so the child receives
+one variable. This applies to both inheritance modes.
+`PROCESS_ENVIRONMENT_BASE` exports the lists, and
+`buildProcessEnvironment({ parent, overlay?, inheritance?, platform? })`
+returns the environment the transport would spawn with. Anything else the
+harness needs is named in `allow`. That includes a gateway
+(`ANTHROPIC_BASE_URL`), an API key (`ANTHROPIC_API_KEY`), a cloud provider
+switch such as `CLAUDE_CODE_USE_BEDROCK`, proxy settings (`HTTPS_PROXY`), or
+certificate bundles (`NODE_EXTRA_CA_CERTS`). Nothing is stripped without a way
+to opt back in. The operating system may add variables of its own when the
+child starts (macOS adds `__CF_USER_TEXT_ENCODING`). These are not in the
+record, because Relay did not pass them.
+
+An `allow` entry that is empty or contains `=`, or any other `inherit` value,
+throws a `TypeError` at construction.
 
 Failure behaviour:
 
 - A signal that is already aborted, or aborts while the child runs, throws
-  `ABORTED`. A running child is sent `SIGTERM`.
+  `ABORTED` at once, and the child is terminated in the background. It is sent
+  `SIGTERM`, then `SIGKILL` if it is still running
+  `PROCESS_TERMINATION_GRACE_MS` (2000 ms) later. What receives the signals
+  depends on `processGroup`:
+  - `"shared"` (default): the child stays in the host's process group, as in
+    Relay 0.7, so a terminal Ctrl-C reaches it. Only the direct child is
+    signalled; processes it started may keep running.
+  - `"isolated"` (macOS and Linux only): the child is spawned `detached` and
+    leads its own process group. The whole group is signalled, so processes the
+    harness started are stopped too. The group no longer receives the
+    terminal's Ctrl-C. Relay kills groups still running when the host exits
+    normally (`process.exit()` or an empty event loop). **A host killed by a
+    signal it does not handle, including Node's default Ctrl-C handling, does
+    not run that cleanup and can leave the group running.** Use it for
+    unattended hosts, or abort invocations from your own signal handlers.
+    Construction throws on Windows, where `detached` opens a new console
+    instead of a process group.
+  - On Windows only the direct child is ever terminated. Relay does not shell
+    out to `taskkill`.
+  - A child that exits normally is left alone in both modes, including any
+    process it deliberately left running.
+- The transport has no timeout of its own. A harness that never answers (for
+  example, one pointed at an unreachable endpoint) runs until the signal
+  aborts. Unattended hosts should always pass one, such as
+  `{ signal: AbortSignal.timeout(ms) }`.
 - `prepare()` throwing anything other than a `ModelInvocationError` becomes
   `INVALID_REQUEST`.
 - A missing executable (`ENOENT`) is a retryable `PROVIDER_UNAVAILABLE`. Any
@@ -189,9 +270,10 @@ Failure behaviour:
 
 | Option | Meaning |
 | --- | --- |
-| `model` | Passed to `--model`. Required. |
+| `model` | Passed to `--model`. Required. An empty id, or one starting with `-` (which the CLI would read as an option), throws a `TypeError` at construction. |
 | `executable` | Default `claude`. |
-| `cwd`, `environment`, `maxOutputBytes` | As for the process transport. |
+| `cwd`, `environment`, `environmentInheritance`, `processGroup`, `maxOutputBytes` | As for the process transport. |
+| `isolation` | `"none"` (default) or `"safe-mode"`. See below. |
 
 It runs `claude --print --output-format json --model <model>
 --no-session-persistence --tools "" --permission-mode dontAsk`, adding
@@ -207,8 +289,67 @@ descriptions.
 - `outputTokenLimitFidelity` is `unavailable`. When the CLI reports more output
   tokens than `maxOutputTokens`, the result carries the warning
   `OUTPUT_TOKEN_LIMIT_NOT_ENFORCED: requested <n>, observed <m>`.
-- `createClaudeCodeCodec(model)` is exported for profile conformance fixtures.
-  Applications should construct the runtime.
+- `createClaudeCodeCodec(model, { isolation? })` is exported for profile
+  conformance fixtures. Applications should construct the runtime.
+
+By default the CLI loads the operator's whole configuration. That includes
+user, project, and local settings files, whose `env` block and `apiKeyHelper`
+can set the endpoint and credential. It also includes hooks (a
+`UserPromptSubmit` hook sees the prompt), MCP servers, plugins, skills, and
+`CLAUDE.md` files from the working directory and above.
+
+`isolation: "safe-mode"` appends `--safe-mode --setting-sources ""`:
+
+| Flag | Disables |
+| --- | --- |
+| `--safe-mode` | `CLAUDE.md` files, hooks, MCP servers, skills, installed plugins, custom commands and agents, output styles. It does **not** stop settings files from applying their `env` block or `apiKeyHelper`. |
+| `--setting-sources ""` | Every user (`~/.claude/settings.json`), project (`.claude/settings.json`), and local (`.claude/settings.local.json`) settings file, including their `env` and `apiKeyHelper`. `local` would not be enough: it still loads `.claude/settings.local.json` from the working directory. |
+
+What still applies:
+
+- The stored login: subscription OAuth (including the macOS keychain), **or a
+  stored API-key login** (`primaryApiKey` in `~/.claude.json`). A stored API
+  key replaces subscription authentication and is sent under isolation, so
+  isolation does not guarantee subscription billing. Verified on 2.1.321: a
+  throwaway `HOME` whose `.claude.json` held a synthetic `primaryApiKey` sent
+  that key under `--safe-mode --setting-sources ""`.
+- Admin-managed (policy) settings, which neither flag can disable. Their `env`
+  block and `apiKeyHelper` therefore still apply, so an administrator's policy
+  can still set the endpoint or credential. (This follows from the CLI's
+  help text; it was not tested, because writing managed settings needs
+  administrator rights.)
+- Model selection and built-in permissions behaviour.
+- The child's environment, which `environmentInheritance` controls.
+
+A gateway or API key configured only in a settings file is therefore **not**
+used under isolation. A host that needs one should put it in the environment
+(`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`) and name it in
+`environmentInheritance.allow`, or set it in the `environment` overlay.
+
+Verified against Claude Code 2.1.321 on macOS. The probe used a local HTTP
+listener, a throwaway `HOME` whose user settings set `ANTHROPIC_BASE_URL` to
+the listener and a synthetic `ANTHROPIC_API_KEY`, a second throwaway `HOME`
+using `apiKeyHelper`, and a working directory with project and local settings
+doing the same:
+
+| Run | Listener received the settings credential | Project `CLAUDE.md` and `UserPromptSubmit` hook | Subscription login with the real `HOME` |
+| --- | --- | --- | --- |
+| default flags | yes | applied | works |
+| `--safe-mode` | yes (`env` and `apiKeyHelper`) | not applied | works |
+| `--safe-mode --setting-sources local` | yes (local settings) | not applied | not tested |
+| `--safe-mode --setting-sources ""` | no | not applied | works |
+
+Claude Code rejects an unknown option and exits 1, so a CLI without these
+flags fails the invocation (`RUNTIME_FAILURE`) rather than running
+unisolated. `--bare` is not used because it never reads the subscription
+login.
+
+The result's `execution.isolationFlags` lists the isolation flags, with their
+values, present in the argv that was spawned: `[]` by default, or
+`["--safe-mode", "--setting-sources", ""]` in safe mode. Combine both options
+for a run that neither inherits ambient credentials nor loads the operator's
+configuration, and pass an abort signal (see the process transport's failure
+behaviour), because a run against an unreachable endpoint may never exit.
 
 ## Codex runtime
 
@@ -339,6 +480,7 @@ From `@kontourai/relay/runtime-profile`.
 | --- | --- | --- |
 | `profile`, `model` | all | Usually spread from `parseModelRuntimeProfile()`. |
 | `executable`, `cwd`, `environment`, `maxOutputBytes` | `claude-code`, `codex`, `opencode` | Forwarded to the runtime. |
+| `environmentInheritance`, `isolation`, `processGroup` | `claude-code` | Forwarded to the runtime. Any other profile throws when any of them is set, even to a value that would change nothing (`isolation: "none"`, `{ inherit: "all" }`), so a host never believes an option applied where it did not. |
 | `allowPromptedStructuredOutput` | `opencode` | Required. Without it, construction throws. The runtime is always built with `structuredOutput: "prompted"`. |
 | `apiKey` | `anthropic` | Required. Without it, construction throws. The resolver never reads the environment. |
 | `baseUrl`, `maxRetries`, `timeoutMs` | `anthropic` | Forwarded to the runtime. |

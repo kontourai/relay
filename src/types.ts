@@ -57,6 +57,27 @@ export interface ModelUsage {
  */
 export type ModelSource = "provider-reported" | "configured";
 
+/**
+ * How a process-backed runtime built its child's environment. Variable names
+ * only; values are never recorded. `all` means the whole parent environment
+ * was inherited, so the names are not enumerated.
+ */
+export type ModelExecutionEnvironment =
+  | { readonly inherit: "all" }
+  | { readonly inherit: "allowlist"; readonly names: readonly string[] };
+
+/**
+ * Content-free evidence of how a process-backed runtime ran this invocation,
+ * derived from what it actually passed to the child process.
+ */
+export interface ModelExecutionRecord {
+  environment?: ModelExecutionEnvironment;
+  /** Harness isolation flags present in the spawned argv, in argv order. */
+  isolationFlags?: readonly string[];
+  /** Whether the child shared the host's process group or led its own (`detached`). */
+  processGroup?: "shared" | "isolated";
+}
+
 export interface ModelInvocationResult {
   provider: string;
   /**
@@ -75,6 +96,12 @@ export interface ModelInvocationResult {
   latencyMs: number;
   stopReason?: string;
   warnings?: readonly string[];
+  /**
+   * Set by process-backed runtimes. SDK runtimes leave it absent. Replay and
+   * fake runtimes return the recorded or supplied result as is, including this
+   * field, because it describes the run that produced that result.
+   */
+  execution?: ModelExecutionRecord;
 }
 
 export interface ModelRuntimeCapabilities {

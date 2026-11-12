@@ -130,6 +130,44 @@ const localRuntime = createClaudeCodeRuntime({ model: "sonnet" });
 Authentication remains owned by the installed harness. Relay does not inspect,
 copy, or persist its credential configuration.
 
+By default the child inherits the host's whole environment and the CLI loads
+the operator's settings files (including their `env` block and
+`apiKeyHelper`), hooks, MCP servers, and `CLAUDE.md` files. A host that sends
+sensitive content should opt out of both:
+
+```ts
+const isolatedRuntime = createClaudeCodeRuntime({
+  model: "sonnet",
+  // Only PATH, HOME, USER, and TMPDIR (or the Windows equivalents), plus names you list.
+  environmentInheritance: { inherit: "allowlist", allow: [] },
+  // Adds --safe-mode (no CLAUDE.md, hooks, MCP servers, skills, or plugins) and
+  // --setting-sources "" (no user, project, or local settings files, so no
+  // settings `env` or apiKeyHelper). The stored login still applies, and so do
+  // admin policy settings (including their env and apiKeyHelper).
+  isolation: "safe-mode",
+});
+await isolatedRuntime.invoke(request, { signal: AbortSignal.timeout(120_000) });
+```
+
+Isolation does not change the stored login. A stored API-key login
+(`primaryApiKey` in `~/.claude.json`) is still used instead of a subscription,
+and admin-managed policy settings, including their `env` and `apiKeyHelper`,
+still apply. A gateway or key set only in a settings file is not used under
+isolation. Put
+it in the environment and name it in `allow` (for example
+`ANTHROPIC_BASE_URL`) when the run should use it. Relay has no default timeout,
+and a run against an unreachable endpoint may never exit, so unattended hosts
+should pass an abort signal. An abort sends `SIGTERM` to the harness, then
+`SIGKILL` after 2 s. By default the harness stays in the host's process group,
+so a terminal Ctrl-C reaches it, and only the direct child is signalled.
+Unattended hosts on macOS or Linux can pass `processGroup: "isolated"` so an
+abort stops the whole process tree. An isolated group no longer receives
+Ctrl-C, and it can outlive a host that is killed by a signal it does not
+handle. Each result's `execution` record lists the
+variable names the child received and the isolation flags that were passed.
+See the [reference](docs/reference.md#claude-code-runtime) for exactly what
+each flag disables.
+
 Claude Code does not currently expose a per-invocation output-token ceiling
 through this profile, so it reports `outputTokenLimitFidelity: "unavailable"`.
 When the CLI reports more output tokens than requested, Relay returns

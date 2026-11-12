@@ -1,13 +1,58 @@
 import { ModelInvocationError, type ModelInvocationRequest, type ModelInvocationResult, type ModelRuntime, type ModelTool } from "./types.js";
 import { classifyAuthOrLimit, detectUsageLimit, toolDescriptionLines } from "./harness-text.js";
-import { createProcessRuntime, type ProcessInvocation, type ProcessInvocationOutput, type ProcessRuntimeCodec } from "./process.js";
+import { createProcessRuntime, type ProcessEnvironmentInheritance, type ProcessGroupMode, type ProcessInvocation, type ProcessInvocationOutput, type ProcessRuntimeCodec } from "./process.js";
+
+/**
+ * `safe-mode` passes `--safe-mode --setting-sources ""`.
+ * - `--safe-mode` disables CLAUDE.md files, hooks, MCP servers, skills,
+ *   installed plugins, and custom commands and agents. On its own it still
+ *   applies settings files, including their `env` block and `apiKeyHelper`,
+ *   which can redirect the run to another endpoint or credential.
+ * - `--setting-sources ""` loads no user, project, or local settings file, so
+ *   neither applies. (`local` would still load `.claude/settings.local.json`
+ *   from the working directory.)
+ * Subscription login and model selection keep working. Admin-managed (policy)
+ * settings still apply; neither flag can disable them.
+ */
+export type ClaudeCodeIsolation = "none" | "safe-mode";
+
+const ISOLATION_FLAGS: Readonly<Record<ClaudeCodeIsolation, readonly string[]>> = Object.freeze({
+  none: Object.freeze([]),
+  "safe-mode": Object.freeze(["--safe-mode", "--setting-sources", ""]),
+});
+
+/**
+ * The isolation flags present in a spawned argv, each with its value. The
+ * value of `--setting-sources` is taken from the next position because it may
+ * be empty, like the value of `--tools`, so matching by content alone would
+ * confuse the two.
+ */
+function isolationFlagsIn(args: readonly string[]): string[] {
+  const found: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--safe-mode") found.push(arg);
+    else if (arg === "--setting-sources" && index + 1 < args.length) found.push(arg, args[++index]!);
+  }
+  return found;
+}
 
 export interface ClaudeCodeRuntimeOptions {
   model: string;
   executable?: string;
   cwd?: string;
   environment?: Readonly<NodeJS.ProcessEnv>;
+  /** As for the process transport. Default `{ inherit: "all" }`. */
+  environmentInheritance?: ProcessEnvironmentInheritance;
+  /** Default `"none"`: the CLI loads the operator's full configuration. */
+  isolation?: ClaudeCodeIsolation;
+  /** As for the process transport. Default `"shared"`. */
+  processGroup?: ProcessGroupMode;
   maxOutputBytes?: number;
+}
+
+export interface ClaudeCodeCodecOptions {
+  isolation?: ClaudeCodeIsolation;
 }
 
 interface ClaudeCodeJsonResult {
@@ -39,15 +84,26 @@ export function createClaudeCodeRuntime(options: ClaudeCodeRuntimeOptions): Mode
       abort: true,
       usage: true,
     },
-    codec: createClaudeCodeCodec(options.model),
+    codec: createClaudeCodeCodec(options.model, options.isolation ? { isolation: options.isolation } : {}),
     ...(options.cwd ? { cwd: options.cwd } : {}),
     ...(options.environment ? { environment: options.environment } : {}),
+    ...(options.environmentInheritance ? { environmentInheritance: options.environmentInheritance } : {}),
+    ...(options.processGroup ? { processGroup: options.processGroup } : {}),
     ...(options.maxOutputBytes ? { maxOutputBytes: options.maxOutputBytes } : {}),
   });
 }
 
 /** Public for profile conformance fixtures; applications should construct the runtime. */
-export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
+export function createClaudeCodeCodec(model: string, codecOptions: ClaudeCodeCodecOptions = {}): ProcessRuntimeCodec {
+  // A value starting with "-" would be parsed by the CLI (and by the isolation
+  // record) as an option rather than a model id.
+  if (typeof model !== "string" || model.length === 0 || model.startsWith("-")) {
+    throw new TypeError("Claude Code model must be a non-empty id that does not start with \"-\"");
+  }
+  const isolation = codecOptions.isolation ?? "none";
+  if (!Object.hasOwn(ISOLATION_FLAGS, isolation)) {
+    throw new TypeError(`Unknown Claude Code isolation: ${String(isolation)}`);
+  }
   return {
     prepare(request): ProcessInvocation {
       const forcedTool = resolveForcedTool(request);
@@ -58,11 +114,12 @@ export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
         "--no-session-persistence",
         "--tools", "",
         "--permission-mode", "dontAsk",
+        ...ISOLATION_FLAGS[isolation],
       ];
       if (forcedTool) args.push("--json-schema", JSON.stringify(forcedTool.inputSchema));
       return { args, stdin: serializeMessages(request, forcedTool) };
     },
-    parse(output, request): ModelInvocationResult {
+    parse(output, request, invocation): ModelInvocationResult {
       const parsed = parseJsonResult(output.stdout);
       if (parsed.is_error === true) {
         throw authOrLimit(output)
@@ -101,6 +158,13 @@ export function createClaudeCodeCodec(model: string): ProcessRuntimeCodec {
         latencyMs: output.latencyMs,
         ...(typeof parsed.stop_reason === "string" ? { stopReason: parsed.stop_reason } : {}),
         ...(warnings.length ? { warnings: Object.freeze(warnings) } : {}),
+        // Derived from the argv the transport spawned, not from the configured
+        // option; without that argv there is nothing to report.
+        ...(invocation ? {
+          execution: Object.freeze({
+            isolationFlags: Object.freeze(isolationFlagsIn(invocation.args)),
+          }),
+        } : {}),
       });
     },
     classifyFailure(output) {
