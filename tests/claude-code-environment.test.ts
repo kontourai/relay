@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { createClaudeCodeRuntime, type ClaudeCodeRuntimeOptions } from "../src/claude-code.js";
+import { createClaudeCodeCodec, createClaudeCodeRuntime, type ClaudeCodeRuntimeOptions } from "../src/claude-code.js";
 import { PROCESS_ENVIRONMENT_BASE, buildProcessEnvironment } from "../src/process.js";
 import { createModelRuntimeProfile } from "../src/runtime-profile.js";
 
@@ -124,6 +124,15 @@ describe("Claude Code child environment and isolation", () => {
     assert.deepEqual(result.execution?.isolationFlags, ["--safe-mode"]);
     const none = await run({ isolation: "none" });
     assert.deepEqual(none.dump.argv, defaultArgs);
+  });
+
+  it("derives isolation evidence from the spawned argv, not the configured option", () => {
+    const codec = createClaudeCodeCodec("sonnet", { isolation: "safe-mode" });
+    const output = { stdout: JSON.stringify({ result: "ok", is_error: false }), stderr: "", exitCode: 0, latencyMs: 1 };
+    assert.deepEqual(codec.parse(output, request, { args: defaultArgs }).execution, { isolationFlags: [] });
+    assert.deepEqual(createClaudeCodeCodec("sonnet").parse(output, request, { args: [...defaultArgs, "--safe-mode"] }).execution, { isolationFlags: ["--safe-mode"] });
+    // Without the spawned argv there is nothing to report, so no record is made up.
+    assert.equal(codec.parse(output, request).execution, undefined);
   });
 
   it("rejects malformed policies at construction", () => {
