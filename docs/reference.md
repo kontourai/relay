@@ -424,6 +424,11 @@ for fixtures.
 | `timeoutMs` | Per-request SDK timeout. Unset keeps the SDK default. A timeout is a retryable `PROVIDER_UNAVAILABLE`. |
 | `now` | Clock for `latencyMs`. |
 
+For SDK clients Relay constructs, Relay disables the Anthropic SDK's OpenTelemetry
+tracing and propagation where the SDK supports these options (including 1.6.0).
+Older supported SDK versions may ignore these options; check their telemetry
+behavior before use. An injected client retains its owner's telemetry policy.
+
 Request mapping: `system` messages are joined with blank lines into `system`;
 `tool` messages are sent as `user` messages; tool results become `tool_result`
 blocks. `toolChoice` maps to `tool`, `any` (for `required`), or `auto`. The
