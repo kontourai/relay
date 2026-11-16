@@ -37,9 +37,11 @@ async function clientFor(options: AnthropicRuntimeOptions): Promise<AnthropicMes
   const apiKey = options.apiKey ?? process.env["ANTHROPIC_API_KEY"];
   if (!apiKey) throw new ModelInvocationError("AUTHENTICATION_FAILED", "No Anthropic-compatible API key supplied", false);
   const moduleName = "@anthropic-ai/sdk";
-  const loaded = await (Function("m", "return import(m)")(moduleName) as Promise<{ default: new (input: { apiKey: string; baseURL?: string; maxRetries: number; timeout?: number }) => { messages: AnthropicMessagesClient } }>);
+  const loaded = await (Function("m", "return import(m)")(moduleName) as Promise<{ default: new (input: { apiKey: string; baseURL?: string; maxRetries: number; timeout?: number; openTelemetry: { traces: false; propagation: false } }) => { messages: AnthropicMessagesClient } }>);
   return new loaded.default({
     apiKey,
+    // Do not let the host SDK telemetry capture or propagate invocation data.
+    openTelemetry: { traces: false, propagation: false },
     ...(options.baseUrl ? { baseURL: options.baseUrl } : {}),
     // The SDK retries twice by default, invisibly to the result and to callers' budgets.
     maxRetries: options.maxRetries ?? 0,
